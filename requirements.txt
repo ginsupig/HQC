@@ -1,0 +1,30 @@
+# ==============================================================================
+# HYBRID QUANTITATIVE SYSTEM - DEPENDENCIES
+# ==============================================================================
+
+# --- Core Engine & Asynchronous Networking ---
+# Handles the zero-blocking EventBus and REST API execution routing
+aiohttp>=3.9.0
+websockets>=12.0
+
+# --- Data Manipulation & Microstructure Math ---
+# The backbone of our tick processing, rolling windows, and feature engineering
+numpy>=1.26.0
+pandas>=2.1.0
+
+# --- Timezone & Scheduling ---
+# Critical for the NYSE clock synchronization in the ORB and Kalman strategies
+pytz>=2023.3.post1
+
+# --- Machine Learning & Adaptive Intelligence ---
+# FreqAI-style feature compression, scaling, and continuous retraining
+scikit-learn>=1.3.0
+lightgbm>=4.1.0
+
+# --- Statistical Regime Detection ---
+# Powers the Hidden Markov Model (HMM) to suppress live trading in hostile markets
+hmmlearn>=0.3.0
+
+# --- Configuration Management ---
+# Parses the centralized settings.yaml file
+PyYAML>=6.0.1

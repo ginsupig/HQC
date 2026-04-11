@@ -1,0 +1,91 @@
+# ==============================================================================
+# HYBRID QUANTITATIVE SYSTEM - MASTER CONFIGURATION
+# ==============================================================================
+# Environment: US Equities (Alpaca Market Data + Execution)
+# Engine: Asynchronous Event-Driven (Nautilus/Jesse Parity)
+# ==============================================================================
+
+system:
+  # 'PAPER' for simulated execution, 'LIVE' for real capital deployment
+  trading_mode: "PAPER"
+  # Safety guard: LIVE mode only honored when HQC_ENABLE_LIVE_TRADING=1
+  allow_live_trading: false
+  # Forces local simulated fills and bypasses broker API requests
+  simulate_only: true
+  log_level: "INFO"
+  timezone: "US/Eastern"
+
+broker:
+  name: "Alpaca"
+  # API keys should be injected via environment variables in production, 
+  # but can be defined here for local testing.
+  api_key_id: "ENV:ALPACA_API_KEY"
+  api_secret: "ENV:ALPACA_API_SECRET"
+  execution_retries: 3
+  execution_backoff_sec: 0.2
+
+data_feed:
+  provider: "Alpaca"
+  feed: "iex"
+  universe:
+    - "SPY"
+    - "QQQ"
+    - "TSLA"
+    - "NVDA"
+    - "AMD"
+  # Microstructure Liquidity Scorer Parameters
+  microstructure:
+    amihud_window_size: 100
+    illiq_threshold_z: 2.5   # Z-score at which a liquidity vacuum is declared
+
+risk_management:
+  account:
+    initial_capital: 100000.0
+    base_risk_pct: 0.01      # 1% of total equity risked per trade
+  circuit_breakers:
+    max_daily_drawdown: -0.10 # -10% halts the entire system
+    soft_drawdown: -0.05      # -5% downgrades the system to VIRTUAL_TRADING
+    virtual_recovery: 0.02    # +2% virtual slope required to re-engage LIVE_TRADING
+  slippage_control:
+    max_slippage_bps: 5.0    # 5 basis points max drift before order is aborted
+    max_hanging_time_sec: 10.0 # Time-in-force before unfilled partials are canceled
+  eod_liquidation:
+    enabled: true
+    liquidation_hour_est: 15
+    liquidation_minute_est: 55
+
+strategies:
+  # Pillar I: Structural Volatility
+  orb:
+    enabled: true
+    range_minutes: 15        # Establish the opening range from 9:30 AM to 9:45 AM EST
+    max_trades_per_day: 2    # Prevent overtrading during choppy mid-day sessions
+  
+  # Pillar II: Institutional Benchmarking
+  vwap_hunter:
+    enabled: true
+    min_cumulative_volume: 250000.0 # Stage-0 liquidity filter
+    vwap_tolerance_pct: 0.02        # Acceptable pullback zone to VWAP
+    momentum_threshold_pct: 0.05    # Required acceleration slope to trigger entry
+
+  # Pillar III: Statistical Equilibrium
+  kalman_mean_reversion:
+    enabled: false           # Disabled for Equities by default; highly effective for Pairs
+    delta_process_noise: 0.0001
+    ve_measurement_noise: 0.001
+    entry_z_score: 2.0
+    exit_z_score: 0.5
+
+intelligence:
+  # Adaptive FreqAI-Style Machine Learning Pipeline
+  ml_pipeline:
+    enabled: true
+    retrain_interval_sec: 3600.0  # Retrain LightGBM models hourly in background
+    pca_variance_retained: 0.95   # Compress technical features to 95% variance
+    hyperparameters:
+      n_estimators: 500
+      learning_rate: 0.05
+      max_depth: 5
+      subsample: 0.8
+      colsample_bytree: 0.8
+      n_jobs: 2
