@@ -34,7 +34,7 @@ class AlpacaWebsocketManager:
         symbols: List[str],
         bus: EventBus,
         feed: str = "iex",
-        connect_timeout_sec: float = 90.0,
+        connect_timeout_sec: float = 300.0,
         reconnect_base_sec: float = 1.0,
         reconnect_max_sec: float = 30.0,
     ):
@@ -115,9 +115,13 @@ class AlpacaWebsocketManager:
 
                     auth_result = await self._authenticate()
                     if auth_result is self._AUTH_LIMIT_EXCEEDED:
-                        # Previous session still alive on Alpaca's side; give it time to expire.
-                        limit_wait = max(30.0, self.reconnect_max_sec)
-                        logger.info("Waiting %.0fs for Alpaca connection slot to free up...", limit_wait)
+                        # Previous session still alive on Alpaca's side; back off exponentially.
+                        limit_wait = min(30.0 * (2 ** retry_count), 120.0)
+                        logger.info(
+                            "Waiting %.0fs for Alpaca connection slot to free up (attempt %d)...",
+                            limit_wait,
+                            retry_count + 1,
+                        )
                         await asyncio.sleep(limit_wait)
                         raise RuntimeError("Alpaca connection limit exceeded (406)")
                     if not auth_result:
