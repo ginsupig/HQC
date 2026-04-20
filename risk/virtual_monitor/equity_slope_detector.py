@@ -51,6 +51,7 @@ class VirtualEquitySlopeDetector:
         system_name: str = "HQC",
         arm: str = "equities",
         env: str = "paper",
+        feedback_root: str = "state/feedback",
     ) -> None:
         self.bus = bus
         self.initial_capital = float(initial_capital)
@@ -63,7 +64,7 @@ class VirtualEquitySlopeDetector:
         self.equity_history.append(self.initial_capital)
 
         self.feedback = UnifiedFeedbackLogger(
-            root="state/feedback",
+            root=feedback_root,
             system_name=system_name,
             arm=arm,
             env=env,
@@ -287,6 +288,7 @@ if __name__ == "__main__":
         bus = EventBus()
         await bus.start()
 
+        # Use an isolated test path so __main__ runs never write to state/feedback/
         detector = VirtualEquitySlopeDetector(
             bus,
             initial_capital=100000.0,
@@ -294,6 +296,7 @@ if __name__ == "__main__":
             system_name="HQC",
             arm="equities",
             env="paper",
+            feedback_root="state/test_feedback",
         )
 
         def mock_trade(action: str, qty: int, price: float) -> Event:

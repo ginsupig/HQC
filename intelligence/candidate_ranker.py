@@ -360,6 +360,13 @@ class CandidateRanker:
         hard_veto = bool(veto.get("hard_veto", False))
         reasons = list(veto.get("reasons", []))
 
+        # Treat low relative volume as a hard veto at ranker gate to avoid thin-tape entries.
+        if rvol < self.liq_rs.min_rvol:
+            hard_veto = True
+            rvol_reason = f"rvol<{self.liq_rs.min_rvol:.2f}"
+            if rvol_reason not in reasons:
+                reasons.append(rvol_reason)
+
         base_score = float(scoring.get("total_score", 0.0))
 
         tod_mult = self._time_of_day_multiplier(symbol)

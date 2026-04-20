@@ -30,9 +30,14 @@ data_feed:
   universe:
     - "SPY"
     - "QQQ"
-    - "TSLA"
+    - "AAPL"
+    - "MSFT"
     - "NVDA"
+    - "TSLA"
+    - "META"
+    - "AMZN"
     - "AMD"
+    - "GOOGL"
   # Microstructure Liquidity Scorer Parameters
   microstructure:
     amihud_window_size: 100

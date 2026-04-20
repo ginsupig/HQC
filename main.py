@@ -10,9 +10,18 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _load_settings(path: str = "config/settings.yaml") -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
 
 from core.engine.event_bus import Event, EventBus, EventType
 from core.engine.session_clock import MarketSessionClock, SessionPhase
@@ -76,10 +85,15 @@ class TradingNode:
 
         self.bus = EventBus()
 
-        universe_env = os.getenv("HQC_UNIVERSE", "SPY,QQQ,TSLA")
+        _settings = _load_settings()
+        _yaml_universe: List[str] = (
+            _settings.get("data_feed", {}).get("universe", []) or []
+        )
+        _default = ",".join(_yaml_universe) if _yaml_universe else "SPY,QQQ,TSLA"
+        universe_env = os.getenv("HQC_UNIVERSE", _default)
         self.target_symbols: List[str] = [s.strip().upper() for s in universe_env.split(",") if s.strip()]
         if not self.target_symbols:
-            self.target_symbols = ["SPY", "QQQ", "TSLA"]
+            self.target_symbols = _yaml_universe or ["SPY", "QQQ", "TSLA"]
 
         self.initial_capital = float(os.getenv("HQC_INITIAL_CAPITAL", "100000"))
 

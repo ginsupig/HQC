@@ -55,6 +55,7 @@ class AlpacaExecutionRouter:
         }
 
         self.session: Optional[aiohttp.ClientSession] = None
+        self._stopping = False
         self._order_poll_tasks: Dict[str, asyncio.Task] = {}
         self._reported_order_state: Dict[str, tuple[str, float]] = {}
         self._tracked_order_ids: set[str] = set()
@@ -69,6 +70,7 @@ class AlpacaExecutionRouter:
         self.bus.subscribe(EventType.ORDER_FILL, self.on_execution_control)
 
     async def start(self) -> None:
+        self._stopping = False
         if self.simulate_only:
             logger.warning("Alpaca Execution Router running in SIMULATE_ONLY mode. No broker API calls will be made.")
             return
@@ -114,6 +116,7 @@ class AlpacaExecutionRouter:
         }
 
     async def stop(self) -> None:
+        self._stopping = True
         for task in list(self._order_poll_tasks.values()):
             task.cancel()
         if self._order_poll_tasks:
@@ -139,11 +142,12 @@ class AlpacaExecutionRouter:
         shares = int(payload.get("shares", 0) or 0)
         strategy = payload.get("strategy", "Unknown")
         decision_id = payload.get("decision_id")
+        force_exit = bool((payload.get("meta") or {}).get("eod_liquidation"))
 
         entry_price = self._to_float(payload.get("entry_price", payload.get("reference_price")), 0.0)
         stop_loss = self._to_float(payload.get("stop_loss", payload.get("stop_loss_price")), 0.0)
 
-        if not asset or not action or shares <= 0 or entry_price <= 0 or stop_loss <= 0:
+        if not asset or not action or shares <= 0 or entry_price <= 0:
             logger.error("Malformed sized order payload. asset=%s action=%s shares=%s", asset, action, shares)
             self.feedback.write_outcome(
                 {
@@ -159,6 +163,54 @@ class AlpacaExecutionRouter:
             )
             return
 
+        if self._stopping:
+            logger.warning("Router is stopping. Ignoring new routed order for %s %s.", asset, action)
+            return
+
+        # Fetch latest buying power from Alpaca before submitting (skipped when session not ready)
+        buying_power = None
+        if not self.simulate_only and self.session and not self.session.closed:
+            try:
+                account_payload = await self._get_json("/account")
+                buying_power = self._to_float(account_payload.get("buying_power"), 0.0)
+            except Exception as exc:
+                if self._stopping:
+                    # Session closed during shutdown; in-flight event arrived too late — drop silently.
+                    logger.debug("Router stopping; dropping order for %s during shutdown.", asset)
+                    return
+                logger.error("Failed to fetch buying power from Alpaca: %s", exc, exc_info=True)
+                self.feedback.write_outcome(
+                    {
+                        "decision_id": decision_id,
+                        "status": "rejected",
+                        "symbol": asset,
+                        "strategy": strategy,
+                        "side": action,
+                        "qty": shares,
+                        "entry_price": entry_price,
+                        "meta": {"reason": "failed to fetch buying power", "exception": str(exc)},
+                    }
+                )
+                return
+
+        # Check if order exceeds buying power
+        order_value = shares * entry_price
+        if buying_power is not None and order_value > buying_power:
+            logger.error("Order value %.2f exceeds available buying power %.2f. Rejecting order.", order_value, buying_power)
+            self.feedback.write_outcome(
+                {
+                    "decision_id": decision_id,
+                    "status": "rejected",
+                    "symbol": asset,
+                    "strategy": strategy,
+                    "side": action,
+                    "qty": shares,
+                    "entry_price": entry_price,
+                    "meta": {"reason": "insufficient buying power", "order_value": order_value, "buying_power": buying_power},
+                }
+            )
+            return
+
         side, position_intent = self._alpaca_side(action)
 
         order_data: Dict[str, Any] = {
@@ -167,9 +219,33 @@ class AlpacaExecutionRouter:
             "side": side,
             "type": "market",
             "time_in_force": "day",
-            "order_class": "oto",
-            "stop_loss": {"stop_price": str(round(stop_loss, 2))},
         }
+
+        requires_protective_stop = self._requires_protective_stop(action=action, force_exit=force_exit)
+        if requires_protective_stop:
+            if stop_loss <= 0:
+                logger.error(
+                    "Malformed sized order payload. Missing stop_loss for opening trade. asset=%s action=%s shares=%s",
+                    asset,
+                    action,
+                    shares,
+                )
+                self.feedback.write_outcome(
+                    {
+                        "decision_id": decision_id,
+                        "status": "rejected",
+                        "symbol": asset,
+                        "strategy": strategy,
+                        "side": action,
+                        "qty": shares,
+                        "entry_price": entry_price,
+                        "meta": {"reason": "missing stop_loss for opening trade"},
+                    }
+                )
+                return
+            order_data["order_class"] = "oto"
+            order_data["stop_loss"] = {"stop_price": str(round(stop_loss, 2))}
+
         if position_intent:
             order_data["position_intent"] = position_intent
 
@@ -215,6 +291,14 @@ class AlpacaExecutionRouter:
         order_id = payload.get("order_id") or payload.get("exchange_order_id")
         if not order_id or not self.session:
             return
+
+        # Check if already terminal
+        last_state = self._reported_order_state.get(str(order_id))
+        if last_state is not None:
+            status = last_state[0].lower()
+            if status in {"filled", "canceled", "cancelled", "rejected", "expired", "done_for_day"}:
+                logger.info("[CANCEL IGNORED] %s already terminal (%s)", order_id, status)
+                return
 
         endpoint = f"{self.base_url}/orders/{order_id}"
 
@@ -271,7 +355,7 @@ class AlpacaExecutionRouter:
             )
 
     async def _submit_order(self, order_data: Dict[str, Any], original_payload: Dict[str, Any]) -> bool:
-        if not self.session:
+        if not self.session or self.session.closed:
             logger.error("HTTP session not started. Cannot route order.")
             return False
 
@@ -696,6 +780,15 @@ class AlpacaExecutionRouter:
             return "buy", "buy_to_close"
 
         return ("buy" if "BUY" in action else "sell"), None
+
+    @staticmethod
+    def _requires_protective_stop(action: str, force_exit: bool = False) -> bool:
+        """Opening risk orders should carry stop protection; forced exits should not."""
+        if force_exit:
+            return False
+
+        action = str(action or "").upper()
+        return action in {"BUY", "SELL_SHORT", "BUY_TO_OPEN", "SELL_TO_OPEN"}
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
