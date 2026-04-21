@@ -37,6 +37,7 @@ class DynamicRiskSizer:
         max_risk_pct_per_trade: float = 0.015,
         min_trade_dollars: float = 100.0,
         min_share_quantity: int = 1,
+        max_concurrent_positions: int = 5,
     ) -> None:
         self.bus = bus
         self.account_equity = float(account_equity)
@@ -49,12 +50,36 @@ class DynamicRiskSizer:
 
         self.min_trade_dollars = float(min_trade_dollars)
         self.min_share_quantity = int(min_share_quantity)
+        self.max_concurrent_positions = int(max_concurrent_positions)
+
+        self._open_positions: Dict[str, int] = {}
 
         self.bus.subscribe(EventType.ORDER_CREATE, self.on_order_create)
+        self.bus.subscribe(EventType.ORDER_FILL, self.on_order_fill)
 
     def update_equity(self, new_equity: float) -> None:
         self.account_equity = float(new_equity)
         logger.debug("Account equity updated to $%.2f", self.account_equity)
+
+    def seed_positions(self, positions: Dict[str, int]) -> None:
+        self._open_positions = {k: v for k, v in positions.items() if v > 0}
+        logger.info("[SIZER] Seeded %d open positions from reconciliation.", len(self._open_positions))
+
+    async def on_order_fill(self, event: Event) -> None:
+        payload = event.payload or {}
+        asset = str(payload.get("asset") or payload.get("symbol") or "").upper()
+        action = str(payload.get("action") or payload.get("side") or "").upper()
+        filled_qty = float(payload.get("filled_qty") or payload.get("fill_qty") or 0.0)
+        if not asset or filled_qty <= 0:
+            return
+        if action in {"BUY", "BUY_TO_OPEN"}:
+            self._open_positions[asset] = int(self._open_positions.get(asset, 0) + filled_qty)
+        elif action in {"SELL", "SELL_TO_CLOSE", "BUY_TO_COVER"}:
+            remaining = int(self._open_positions.get(asset, 0) - filled_qty)
+            if remaining <= 0:
+                self._open_positions.pop(asset, None)
+            else:
+                self._open_positions[asset] = remaining
 
     async def on_order_create(self, event: Event) -> None:
         payload = dict(event.payload or {})
@@ -77,6 +102,17 @@ class DynamicRiskSizer:
 
         if not asset or not action or entry_price is None or stop_loss_price is None:
             logger.error("Malformed ranked order payload from %s. Dropping execution.", strategy)
+            return
+
+        is_opening = action in {"BUY", "BUY_TO_OPEN", "SELL_SHORT", "SELL_TO_OPEN"}
+        if is_opening and asset not in self._open_positions and len(self._open_positions) >= self.max_concurrent_positions:
+            logger.warning(
+                "[SIZER] Concurrent position limit reached (%d/%d). Dropping %s %s.",
+                len(self._open_positions),
+                self.max_concurrent_positions,
+                asset,
+                action,
+            )
             return
 
         if entry_price <= 0 or stop_loss_price <= 0:

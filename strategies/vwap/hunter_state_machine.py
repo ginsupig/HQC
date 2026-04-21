@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from datetime import datetime, time, timezone, timedelta, date
 from enum import Enum, auto
-from typing import Optional
+from typing import Deque, Optional
 
 import pytz
 
@@ -79,6 +80,8 @@ class USEquityVWAPHunter:
         self.window_open_price: float = 0.0
         self.last_signal_id: Optional[str] = None  # --- FIX: Track last signal to prevent re-triggering ---
         self.bounce_streak: int = 0
+        self._volume_window: Deque[float] = deque(maxlen=20)
+        self._min_volume_ratio: float = 0.20
 
         self.bus.subscribe(EventType.TICK, self.on_tick)
 
@@ -115,6 +118,7 @@ class USEquityVWAPHunter:
         self.window_open_price = 0.0
         self.last_signal_id = None
         self.bounce_streak = 0
+        self._volume_window.clear()
         self.last_date = current_date
         logger.info("[%s] Session reset. VWAP anchor restarted.", self.asset)
 
@@ -176,6 +180,8 @@ class USEquityVWAPHunter:
 
         self.bar_count += 1
         self.last_price = price
+        if volume > 0:
+            self._volume_window.append(volume)
         self._update_vwap(price, volume)
 
         if self.current_state != HunterState.DONE_FOR_DAY:
@@ -250,6 +256,12 @@ class USEquityVWAPHunter:
                     )
                     self.bounce_streak = 0
                     return
+
+                if len(self._volume_window) >= 5:
+                    avg_vol = sum(self._volume_window) / len(self._volume_window)
+                    if avg_vol > 0 and (self._volume_window[-1] / avg_vol) < self._min_volume_ratio:
+                        self.bounce_streak = 0
+                        return
 
                 self.bounce_streak += 1
                 if self.bounce_streak < self.bounce_confirmation_ticks:
