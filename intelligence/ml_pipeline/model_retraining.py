@@ -387,7 +387,7 @@ if __name__ == "__main__":
     print("Testing ContinuousRetrainingPipeline...")
     
     # Generate synthetic OHLCV data
-    dates = pd.date_range("2024-01-01", periods=1000, freq="1H")
+    dates = pd.date_range("2024-01-01", periods=1000, freq="1h")
     np.random.seed(42)
     
     close_prices = 100 + np.cumsum(np.random.normal(0, 0.5, 1000))
