@@ -67,8 +67,8 @@ class DynamicFeatureEngineer:
         
         # Create target: forward returns
         y = work['close'].shift(-self.target_horizon) / work['close'] - 1.0
-        y = y[:-self.target_horizon]
-        
+        y = y.iloc[:-self.target_horizon]
+
         # Features
         feature_cols = ['returns', 'volatility', 'rsi', 'macd', 'ema_20', 'ema_50', 'atr']
         X = work[feature_cols].iloc[:-self.target_horizon]

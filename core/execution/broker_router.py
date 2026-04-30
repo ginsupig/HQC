@@ -59,6 +59,12 @@ class AlpacaExecutionRouter:
         self._order_poll_tasks: Dict[str, asyncio.Task] = {}
         self._reported_order_state: Dict[str, tuple[str, float]] = {}
         self._tracked_order_ids: set[str] = set()
+
+        # Short-lived cache of /account buying_power so a burst of routed
+        # orders does not generate one HTTP round-trip per submission.
+        self._buying_power_cache: Optional[float] = None
+        self._buying_power_cache_at: float = 0.0
+        self._buying_power_ttl_sec: float = 1.0
         self.feedback = UnifiedFeedbackLogger(
             root="state/feedback",
             system_name="HQC",
@@ -171,8 +177,7 @@ class AlpacaExecutionRouter:
         buying_power = None
         if not self.simulate_only and self.session and not self.session.closed:
             try:
-                account_payload = await self._get_json("/account")
-                buying_power = self._to_float(account_payload.get("buying_power"), 0.0)
+                buying_power = await self._cached_buying_power()
             except Exception as exc:
                 if self._stopping:
                     # Session closed during shutdown; in-flight event arrived too late — drop silently.
@@ -687,6 +692,20 @@ class AlpacaExecutionRouter:
             "expired",
             "done_for_day",
         }
+
+    async def _cached_buying_power(self) -> float:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if (
+            self._buying_power_cache is not None
+            and (now - self._buying_power_cache_at) < self._buying_power_ttl_sec
+        ):
+            return self._buying_power_cache
+        account_payload = await self._get_json("/account")
+        value = self._to_float(account_payload.get("buying_power"), 0.0)
+        self._buying_power_cache = value
+        self._buying_power_cache_at = now
+        return value
 
     async def _get_json(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         if not self.session:
