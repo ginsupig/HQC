@@ -6,9 +6,10 @@ import socket
 import threading
 import queue
 import atexit
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TextIO
 
 logger = logging.getLogger("UnifiedFeedbackLogger")
 
@@ -47,37 +48,100 @@ class UnifiedFeedbackLogger:
         self.health_path = self.root / "health.jsonl"
 
         self.hostname = socket.gethostname()
-        
-        # Non-blocking I/O Architecture
+
+        # Non-blocking I/O Architecture with persistent file handles + batched flush.
+        # Keeping handles open avoids per-line open/close syscalls; batched flush
+        # bounds disk-flush frequency rather than fsyncing on every record.
         self._log_queue: queue.Queue = queue.Queue()
         self._shutdown_event = threading.Event()
-        
+        self._file_handles: Dict[Path, TextIO] = {}
+        self._flush_interval_sec: float = 0.5
+        self._max_batch: int = 256
+
         # Daemon thread ensures it doesn't prevent the main program from exiting
         self._worker_thread = threading.Thread(target=self._io_worker, name="LoggerIOWorker", daemon=True)
         self._worker_thread.start()
-        
+
         # Ensure we flush the queue when the bot shuts down
         atexit.register(self.shutdown)
 
+    def _get_handle(self, path: Path) -> TextIO:
+        handle = self._file_handles.get(path)
+        if handle is None or handle.closed:
+            handle = path.open("a", encoding="utf-8", buffering=1024 * 64)
+            self._file_handles[path] = handle
+        return handle
+
     def _io_worker(self) -> None:
         """Background thread that pops logs from memory and writes to disk."""
+        last_flush = time.monotonic()
+        dirty_handles: set[TextIO] = set()
+
         while not self._shutdown_event.is_set() or not self._log_queue.empty():
             try:
-                # 0.1s timeout allows the thread to periodically check for shutdown_event
-                path, payload = self._log_queue.get(timeout=0.1)
-                
-                line = json.dumps(payload, separators=(",", ":"), default=str) + "\n"
-                
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(line)
-                    f.flush()
-                    
-                self._log_queue.task_done()
-                
+                path, payload = self._log_queue.get(timeout=self._flush_interval_sec)
             except queue.Empty:
+                # Idle — flush any pending writes and continue
+                if dirty_handles:
+                    for h in dirty_handles:
+                        try:
+                            h.flush()
+                        except Exception as exc:
+                            logger.error("Flush failure in UnifiedFeedbackLogger: %s", exc)
+                    dirty_handles.clear()
+                    last_flush = time.monotonic()
                 continue
+
+            try:
+                line = json.dumps(payload, separators=(",", ":"), default=str) + "\n"
+                handle = self._get_handle(path)
+                handle.write(line)
+                dirty_handles.add(handle)
+                self._log_queue.task_done()
             except Exception as e:
                 logger.error("Background I/O failure in UnifiedFeedbackLogger: %s", e)
+                continue
+
+            # Drain a small batch before flushing to amortize the flush cost.
+            drained = 0
+            while drained < self._max_batch:
+                try:
+                    path, payload = self._log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    line = json.dumps(payload, separators=(",", ":"), default=str) + "\n"
+                    handle = self._get_handle(path)
+                    handle.write(line)
+                    dirty_handles.add(handle)
+                    self._log_queue.task_done()
+                except Exception as e:
+                    logger.error("Background I/O failure in UnifiedFeedbackLogger: %s", e)
+                drained += 1
+
+            now = time.monotonic()
+            if (now - last_flush) >= self._flush_interval_sec or drained >= self._max_batch:
+                for h in dirty_handles:
+                    try:
+                        h.flush()
+                    except Exception as exc:
+                        logger.error("Flush failure in UnifiedFeedbackLogger: %s", exc)
+                dirty_handles.clear()
+                last_flush = now
+
+        # Final drain on shutdown
+        for h in dirty_handles:
+            try:
+                h.flush()
+            except Exception:
+                pass
+        for h in list(self._file_handles.values()):
+            try:
+                h.flush()
+                h.close()
+            except Exception:
+                pass
+        self._file_handles.clear()
 
     def shutdown(self) -> None:
         """Gracefully waits for remaining logs to write before terminating."""
@@ -88,7 +152,7 @@ class UnifiedFeedbackLogger:
 
     @staticmethod
     def _utc_now() -> str:
-        return datetime.utcnow().isoformat() + "Z"
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _append_jsonl(self, path: Path, payload: Dict[str, Any]) -> None:
         # Puts the log item into memory instantly without blocking the async event loop

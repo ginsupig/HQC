@@ -5,7 +5,7 @@ import os
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Deque, Dict, Optional, Set
 
@@ -265,7 +265,7 @@ class CandidateRanker:
         self.feedback.write_decision(
             {
                 "decision_id": decision_id,
-                "ts": datetime.utcnow().isoformat() + "Z",
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "symbol": symbol,
                 "strategy": strategy,
                 "side": action,
@@ -426,7 +426,7 @@ class CandidateRanker:
     @staticmethod
     def _normalize_ts_ms(ts_raw: object) -> int:
         if ts_raw is None:
-            return int(datetime.utcnow().timestamp() * 1000)
+            return int(datetime.now(timezone.utc).timestamp() * 1000)
 
         if isinstance(ts_raw, (int, float)):
             ts = int(ts_raw)
@@ -442,6 +442,6 @@ class CandidateRanker:
                 ts = int(float(ts_raw))
                 return ts if ts > 10_000_000_000 else ts * 1000
             except Exception:
-                return int(datetime.utcnow().timestamp() * 1000)
+                return int(datetime.now(timezone.utc).timestamp() * 1000)
 
-        return int(datetime.utcnow().timestamp() * 1000)
+        return int(datetime.now(timezone.utc).timestamp() * 1000)

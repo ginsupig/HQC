@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -571,7 +571,7 @@ class TradingNode:
         import aiohttp
         from datetime import datetime, timedelta
 
-        end_date = datetime.utcnow().date()
+        end_date = datetime.now(timezone.utc).date()
         start_date = end_date - timedelta(days=100)
 
         url = "https://data.alpaca.markets/v2/stocks/bars"
@@ -992,7 +992,10 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    loop = asyncio.get_event_loop()
+    # Explicitly create and own the event loop (asyncio.get_event_loop() emits a
+    # DeprecationWarning on Python 3.12+ when no running loop exists).
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     def handle_exception(loop, context):
         msg = context.get("exception", context.get("message"))

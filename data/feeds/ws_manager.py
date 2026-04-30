@@ -227,13 +227,18 @@ class AlpacaWebsocketManager:
     async def stop(self) -> None:
         self._running = False
         if self.connection:
-            await self.connection.close()
+            try:
+                await self.connection.close()
+            except Exception as exc:
+                logger.debug("Websocket close raised during stop(): %s", exc)
         if self._ws_task is not None:
             self._ws_task.cancel()
             try:
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.debug("Websocket listen task raised during stop(): %s", exc)
         logger.info("Alpaca market-data feed terminated.")
 
     @staticmethod
