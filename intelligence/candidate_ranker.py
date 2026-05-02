@@ -210,7 +210,10 @@ class CandidateRanker:
         
         # --- FIX: Extract signal_id for deduplication ---
         signal_id = payload.get("signal_id")
-        ts_ms = self._normalize_ts_ms(None)  # Current time
+        # Use the strategy's event timestamp when available so dedup is
+        # immune to wall-clock drift between event publish and ranker
+        # processing; fall back to "now" when the strategy did not stamp it.
+        ts_ms = self._normalize_ts_ms(payload.get("timestamp"))
         
         if not self._is_duplicate_signal(signal_id, ts_ms):
             logger.debug(

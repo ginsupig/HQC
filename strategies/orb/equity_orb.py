@@ -45,6 +45,7 @@ class USEquityORB:
         breakout_confirmation_ticks: int = 1,
         fakeout_reset_pct: float = 0.0003,
         enable_shorts: bool = True,
+        stop_buffer_pct: float = 0.0010,
     ) -> None:
         self.asset = str(target_asset).upper()
         self.bus = bus
@@ -56,6 +57,10 @@ class USEquityORB:
         self.breakout_confirmation_ticks = max(1, int(breakout_confirmation_ticks))
         self.fakeout_reset_pct = max(0.0, float(fakeout_reset_pct))
         self.enable_shorts = bool(enable_shorts)
+        # Stops placed exactly at the range boundary get tagged by normal
+        # post-breakout chop, locking in losses on healthy trades. Push the
+        # protective stop a few basis points beyond the boundary.
+        self.stop_buffer_pct = max(0.0, float(stop_buffer_pct))
 
         self.tz = pytz.timezone("US/Eastern")
         self.market_open = time(9, 30)
@@ -219,7 +224,7 @@ class USEquityORB:
             return
 
         if self.long_breakout_streak >= self.breakout_confirmation_ticks:
-            stop_loss = round(self.range_low, 4)
+            stop_loss = round(self.range_low * (1.0 - self.stop_buffer_pct), 4)
             logger.warning(
                 "[%s] BULLISH BREAKOUT @ %.2f | range_high=%.2f trigger=%.2f stop=%.2f conf=%d",
                 self.asset,
@@ -245,7 +250,7 @@ class USEquityORB:
                 self.short_breakdown_streak = 0
                 return
 
-            stop_loss = round(self.range_high, 4)
+            stop_loss = round(self.range_high * (1.0 + self.stop_buffer_pct), 4)
             logger.warning(
                 "[%s] BEARISH BREAKDOWN @ %.2f | range_low=%.2f trigger=%.2f stop=%.2f conf=%d",
                 self.asset,

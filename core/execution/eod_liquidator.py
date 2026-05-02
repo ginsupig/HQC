@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, time, date
 from typing import Dict, Optional
 
@@ -25,6 +26,10 @@ class EODLiquidationManager:
         self.last_prices: Dict[str, float] = {}
         self.last_timestamps: Dict[str, int] = {}
         self._last_liquidated_date: Optional[date] = None
+        # Bursts of ticks past the liquidation cutoff can each pass the
+        # date guard before the first await completes; serialize the
+        # critical section so we publish the close orders exactly once.
+        self._liquidation_lock = asyncio.Lock()
 
         self.bus.subscribe(EventType.TICK, self.on_tick)
         self.bus.subscribe(EventType.ORDER_FILL, self.on_order_fill)
@@ -57,8 +62,11 @@ class EODLiquidationManager:
         if dt_est.time() >= self.liquidate_time:
             if self._last_liquidated_date == dt_est.date():
                 return
-            await self.force_liquidate_now(reason="scheduled_eod")
-            self._last_liquidated_date = dt_est.date()
+            async with self._liquidation_lock:
+                if self._last_liquidated_date == dt_est.date():
+                    return
+                await self.force_liquidate_now(reason="scheduled_eod")
+                self._last_liquidated_date = dt_est.date()
 
     async def on_order_fill(self, event: Event) -> None:
         payload = event.payload or {}

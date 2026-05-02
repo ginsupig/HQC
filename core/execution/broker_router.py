@@ -65,6 +65,11 @@ class AlpacaExecutionRouter:
         self._buying_power_cache: Optional[float] = None
         self._buying_power_cache_at: float = 0.0
         self._buying_power_ttl_sec: float = 1.0
+        # Serialize cache misses so concurrent submissions share one /account fetch.
+        self._buying_power_lock: Optional[asyncio.Lock] = None
+        # Open orders older than this are not actively polled at startup;
+        # we still record them but skip the long-lived poll loop.
+        self._reconciled_order_max_age_sec: float = 24 * 60 * 60.0
         self.feedback = UnifiedFeedbackLogger(
             root="state/feedback",
             system_name="HQC",
@@ -536,6 +541,16 @@ class AlpacaExecutionRouter:
 
         self._tracked_order_ids.add(order_id)
         self._reported_order_state[order_id] = (str(order.get("status", "accepted")).lower(), float(filled_qty))
+        if age_sec is not None and age_sec > self._reconciled_order_max_age_sec:
+            logger.warning(
+                "[RECONCILE] Skipping poll for stale open order %s symbol=%s age=%.0fs side=%s qty=%s",
+                order_id,
+                symbol,
+                age_sec,
+                side,
+                total_qty,
+            )
+            return
         self._start_order_poll(
             order_id,
             order_data={"symbol": symbol},
@@ -701,11 +716,20 @@ class AlpacaExecutionRouter:
             and (now - self._buying_power_cache_at) < self._buying_power_ttl_sec
         ):
             return self._buying_power_cache
-        account_payload = await self._get_json("/account")
-        value = self._to_float(account_payload.get("buying_power"), 0.0)
-        self._buying_power_cache = value
-        self._buying_power_cache_at = now
-        return value
+        if self._buying_power_lock is None:
+            self._buying_power_lock = asyncio.Lock()
+        async with self._buying_power_lock:
+            now = loop.time()
+            if (
+                self._buying_power_cache is not None
+                and (now - self._buying_power_cache_at) < self._buying_power_ttl_sec
+            ):
+                return self._buying_power_cache
+            account_payload = await self._get_json("/account")
+            value = self._to_float(account_payload.get("buying_power"), 0.0)
+            self._buying_power_cache = value
+            self._buying_power_cache_at = loop.time()
+            return value
 
     async def _get_json(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         if not self.session:
