@@ -38,6 +38,11 @@ class BacktestConfig:
     vwap_cooldown_bars: int = 8
     vwap_min_stop_pct: float = 0.003
     vwap_max_window_bars: int = 8
+    # Backtest-only execution simulation knobs.
+    # Live trading uses Alpaca's bracket OTO; the offline harness has to
+    # simulate the protective stop and an upper bound on intraday holds.
+    sim_max_hold_minutes: int = 240
+    sim_stop_buffer_ticks: float = 0.0
 
 
 class TradeLedger:
@@ -410,6 +415,218 @@ def _benchmark_metrics(bars: pd.DataFrame) -> Dict[str, object]:
     }
 
 
+class _SimulatedExitEngine:
+    """
+    Backtest-only exit simulator.
+
+    The live system relies on Alpaca's OTO bracket for stop-loss enforcement,
+    so the strategies (notably USEquityVWAPHunter) only emit BUY/SELL_SHORT
+    entries and never publish their own exit. In the offline harness the
+    bracket isn't honored, so without this engine open positions persist
+    until the EOD liquidator at 15:55 ET — that turns "intraday" trades
+    into multi-day holds and corrupts every PnL/exposure metric.
+
+    Responsibilities:
+    - Track each entry fill keyed by (symbol, decision_id).
+    - On every TICK, check the live price against the recorded stop_loss
+      and against a hard time-stop; emit a flat-out ORDER_CREATE (already
+      sized, stage=SIZED so the router routes it directly) if either
+      threshold trips.
+    - Reconcile exits against fills so re-entries get tracked cleanly.
+
+    This is intentionally a pure-backtest component; in the live system
+    the broker enforces the bracket.
+    """
+
+    def __init__(self, bus: EventBus, max_hold_minutes: int = 240, stop_buffer_ticks: float = 0.0) -> None:
+        self.bus = bus
+        self.max_hold_seconds: float = max(60.0, float(max_hold_minutes) * 60.0)
+        self.stop_buffer_ticks = float(stop_buffer_ticks)
+        # symbol -> dict(qty (signed), avg_price, stop, entry_ts_ms, strategy, decision_id)
+        self._positions: Dict[str, Dict[str, object]] = {}
+        # decision_id -> stop_loss_price; populated when the SIZED order is
+        # routed and consumed when the matching fill arrives. _simulate_fill
+        # in the live broker router does not forward stop_loss into the
+        # ORDER_FILL payload, so we have to capture it here.
+        self._pending_stops: Dict[str, float] = {}
+        self.bus.subscribe(EventType.ORDER_CREATE, self.on_order_create)
+        self.bus.subscribe(EventType.ORDER_FILL, self.on_fill)
+        self.bus.subscribe(EventType.TICK, self.on_tick)
+
+    async def on_order_create(self, event: Event) -> None:
+        payload = event.payload or {}
+        # Only capture sized opening intents that carry a real stop_loss.
+        if payload.get("stage") != "SIZED":
+            return
+        if (payload.get("meta") or {}).get("simulated_exit"):
+            return
+        if (payload.get("meta") or {}).get("eod_liquidation"):
+            return
+        decision_id = payload.get("decision_id")
+        if not decision_id:
+            return
+        stop = self._coerce_float(payload.get("stop_loss") or payload.get("stop_loss_price"))
+        if stop is None:
+            return
+        self._pending_stops[str(decision_id)] = stop
+
+    async def on_fill(self, event: Event) -> None:
+        payload = event.payload or {}
+        status = str(payload.get("status", "")).upper()
+        if status in {"CANCELED", "CANCELLED", "REJECTED", "ERROR"}:
+            return
+        action = str(payload.get("action") or payload.get("side") or "").upper()
+        symbol = str(payload.get("asset") or payload.get("symbol") or "").upper()
+        if not symbol or not action:
+            return
+        try:
+            fill_qty = int(float(payload.get("fill_qty", payload.get("filled_qty", 0)) or 0))
+            fill_price = float(payload.get("fill_price", payload.get("entry_price", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            return
+        if fill_qty <= 0 or fill_price <= 0:
+            return
+
+        signed = fill_qty if action in {"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"} else -fill_qty
+        pos = self._positions.get(symbol)
+        prior_qty = int(pos["qty"]) if pos else 0
+        new_qty = prior_qty + signed
+
+        if new_qty == 0:
+            self._positions.pop(symbol, None)
+            return
+
+        # New or same-direction increment: update average and (re)arm stop.
+        if prior_qty == 0 or (prior_qty > 0 and signed > 0) or (prior_qty < 0 and signed < 0):
+            stop = self._coerce_float(payload.get("stop_loss") or payload.get("stop_loss_price"))
+            decision_id = str(payload.get("decision_id") or "")
+            if stop is None and decision_id:
+                stop = self._pending_stops.pop(decision_id, None)
+            elif decision_id:
+                self._pending_stops.pop(decision_id, None)
+            entry_ts = self._coerce_int(payload.get("timestamp"))
+            if pos is None:
+                self._positions[symbol] = {
+                    "qty": new_qty,
+                    "avg_price": fill_price,
+                    "stop": stop,
+                    "entry_ts_ms": entry_ts or 0,
+                    "strategy": payload.get("strategy") or "Unknown",
+                    "decision_id": payload.get("decision_id"),
+                }
+            else:
+                total_cost = abs(prior_qty) * float(pos["avg_price"]) + abs(signed) * fill_price
+                pos["qty"] = new_qty
+                pos["avg_price"] = total_cost / abs(new_qty)
+                # Keep the original stop unless the latest fill provided a tighter one.
+                if stop is not None and stop > 0:
+                    if pos.get("stop") is None or pos["stop"] in (0, 0.0):
+                        pos["stop"] = stop
+            return
+
+        # Opposite direction: partially or fully reduce; re-anchor if flipped.
+        if (prior_qty > 0 and new_qty < 0) or (prior_qty < 0 and new_qty > 0):
+            stop = self._coerce_float(payload.get("stop_loss") or payload.get("stop_loss_price"))
+            decision_id = str(payload.get("decision_id") or "")
+            if stop is None and decision_id:
+                stop = self._pending_stops.pop(decision_id, None)
+            elif decision_id:
+                self._pending_stops.pop(decision_id, None)
+            self._positions[symbol] = {
+                "qty": new_qty,
+                "avg_price": fill_price,
+                "stop": stop,
+                "entry_ts_ms": self._coerce_int(payload.get("timestamp")) or 0,
+                "strategy": payload.get("strategy") or "Unknown",
+                "decision_id": payload.get("decision_id"),
+            }
+            return
+
+        # Pure reduction (no flip): keep the existing entry context intact.
+        if pos is not None:
+            pos["qty"] = new_qty
+
+    async def on_tick(self, event: Event) -> None:
+        if not self._positions:
+            return
+        payload = event.payload or {}
+        symbol = str(payload.get("ticker") or payload.get("symbol") or "").upper()
+        if not symbol or symbol not in self._positions:
+            return
+        try:
+            price = float(payload.get("price", 0.0))
+        except (TypeError, ValueError):
+            return
+        if price <= 0:
+            return
+
+        ts_ms = self._coerce_int(payload.get("timestamp")) or 0
+        pos = self._positions[symbol]
+        qty = int(pos["qty"])
+        if qty == 0:
+            return
+
+        stop = self._coerce_float(pos.get("stop"))
+        entry_ts = int(pos.get("entry_ts_ms") or 0)
+        # Stop hit: long below stop, short above stop.
+        stop_hit = False
+        if stop is not None and stop > 0:
+            if qty > 0 and price <= stop:
+                stop_hit = True
+            elif qty < 0 and price >= stop:
+                stop_hit = True
+
+        time_hit = False
+        if entry_ts > 0 and ts_ms > 0:
+            if (ts_ms - entry_ts) / 1000.0 >= self.max_hold_seconds:
+                time_hit = True
+
+        if not stop_hit and not time_hit:
+            return
+
+        reason = "stop" if stop_hit else "time_stop"
+        exit_action = "SELL" if qty > 0 else "BUY_TO_COVER"
+        decision_id = pos.get("decision_id") or f"SIMEXIT-{symbol}-{ts_ms}"
+        # Drop the position before publishing so a re-fill in the same tick
+        # storm doesn't double-fire the exit.
+        self._positions.pop(symbol, None)
+        self.bus.publish(
+            Event(
+                type=EventType.ORDER_CREATE,
+                payload={
+                    "asset": symbol,
+                    "action": exit_action,
+                    "strategy": str(pos.get("strategy") or "SIM_EXIT"),
+                    "stage": "SIZED",
+                    "shares": abs(qty),
+                    "reference_price": round(price, 4),
+                    "entry_price": round(price, 4),
+                    "timestamp": ts_ms,
+                    "stop_loss": round(price, 4),
+                    "stop_loss_price": round(price, 4),
+                    "status": "READY_FOR_BROKER",
+                    "decision_id": f"{decision_id}-{reason}",
+                    "meta": {"simulated_exit": True, "reason": reason, "eod_liquidation": True},
+                },
+            )
+        )
+
+    @staticmethod
+    def _coerce_float(value: object) -> Optional[float]:
+        try:
+            v = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    @staticmethod
+    def _coerce_int(value: object) -> Optional[int]:
+        try:
+            return int(float(value))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+
 async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, object]:
     symbol = cfg.symbol.upper()
     benchmark_symbol = (cfg.benchmark_symbol or cfg.symbol).upper()
@@ -456,6 +673,11 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
         slippage_controller=_slip,
     )
     eod = EODLiquidationManager(bus=bus)
+    _exit_sim = _SimulatedExitEngine(
+        bus=bus,
+        max_hold_minutes=cfg.sim_max_hold_minutes,
+        stop_buffer_ticks=cfg.sim_stop_buffer_ticks,
+    )
     ledger = TradeLedger(initial_equity=cfg.initial_capital)
 
     bus.subscribe(EventType.ORDER_FILL, ledger.on_fill)
@@ -565,6 +787,8 @@ async def _main_async(args: argparse.Namespace) -> None:
         vwap_cooldown_bars=args.vwap_cooldown_bars,
         vwap_min_stop_pct=args.vwap_min_stop_pct,
         vwap_max_window_bars=args.vwap_max_window_bars,
+        sim_max_hold_minutes=args.sim_max_hold_minutes,
+        sim_stop_buffer_ticks=args.sim_stop_buffer_ticks,
     )
     result = await run_backtest(df, cfg)
     print(json.dumps(result, indent=2))
@@ -595,6 +819,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vwap-cooldown-bars", type=int, default=8)
     p.add_argument("--vwap-min-stop-pct", type=float, default=0.003)
     p.add_argument("--vwap-max-window-bars", type=int, default=8)
+    p.add_argument(
+        "--sim-max-hold-minutes",
+        type=int,
+        default=240,
+        help="Backtest-only hard time-stop for open positions (minutes).",
+    )
+    p.add_argument(
+        "--sim-stop-buffer-ticks",
+        type=float,
+        default=0.0,
+        help="Backtest-only buffer added to stop levels before triggering (price units).",
+    )
     p.add_argument("--output", default="", help="Optional path to write JSON result.")
     return p.parse_args()
 
