@@ -89,6 +89,10 @@ def _candidate_configs(
                 vwap_momentum_threshold_pct=vwap_momentum,
                 sim_max_hold_minutes=args.sim_max_hold_minutes,
                 sim_stop_buffer_ticks=args.sim_stop_buffer_ticks,
+                slippage_bps_per_side=args.slippage_bps_per_side,
+                commission_per_share=args.commission_per_share,
+                commission_min_per_trade=args.commission_min_per_trade,
+                sec_fee_rate=args.sec_fee_rate,
             )
         )
     return configs
@@ -255,6 +259,10 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Backtest-only buffer added to stop levels before triggering (price units).",
     )
+    p.add_argument("--slippage-bps-per-side", type=float, default=1.5)
+    p.add_argument("--commission-per-share", type=float, default=0.0)
+    p.add_argument("--commission-min-per-trade", type=float, default=0.0)
+    p.add_argument("--sec-fee-rate", type=float, default=0.000008)
     p.add_argument("--output", default="")
     return p.parse_args()
 

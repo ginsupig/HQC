@@ -209,6 +209,10 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Backtest-only buffer added to stop levels before triggering (price units).",
     )
+    p.add_argument("--slippage-bps-per-side", type=float, default=1.5)
+    p.add_argument("--commission-per-share", type=float, default=0.0)
+    p.add_argument("--commission-min-per-trade", type=float, default=0.0)
+    p.add_argument("--sec-fee-rate", type=float, default=0.000008)
     p.add_argument("--output", default="")
     p.add_argument(
         "--summary-only",

@@ -43,10 +43,26 @@ class BacktestConfig:
     # simulate the protective stop and an upper bound on intraday holds.
     sim_max_hold_minutes: int = 240
     sim_stop_buffer_ticks: float = 0.0
+    # Transaction cost model. Default values are conservative for an
+    # Alpaca paper / live equity account: 1.5 bps slippage each leg
+    # (~3 bps round-trip), zero commission per share, and the SEC fee
+    # on sells (0.000008 of notional, only charged on the sell side).
+    # Override these to stress-test cost assumptions.
+    slippage_bps_per_side: float = 1.5
+    commission_per_share: float = 0.0
+    commission_min_per_trade: float = 0.0
+    sec_fee_rate: float = 0.000008
 
 
 class TradeLedger:
-    def __init__(self, initial_equity: float) -> None:
+    def __init__(
+        self,
+        initial_equity: float,
+        slippage_bps_per_side: float = 0.0,
+        commission_per_share: float = 0.0,
+        commission_min_per_trade: float = 0.0,
+        sec_fee_rate: float = 0.0,
+    ) -> None:
         self.initial_equity = float(initial_equity)
         self.equity = float(initial_equity)
         self.positions: Dict[str, Dict[str, object]] = {}
@@ -58,9 +74,35 @@ class TradeLedger:
         self.closed_trades: List[Dict[str, object]] = []
         self.gross_profit = 0.0
         self.gross_loss = 0.0
+        # Pre-cost figures so we can show how much edge friction is eating.
+        self.gross_realized_pnl = 0.0
+        self.total_costs = 0.0
         self.duration_total_sec = 0.0
         self.duration_count = 0
         self.strategy_stats: Dict[str, Dict[str, object]] = {}
+        # Transaction cost model. Slippage is applied to the opposite-side
+        # leg (the close) as a haircut on close_qty * exit_price; the
+        # entry-leg slippage is charged at close time too so a single
+        # round-trip is fully accounted in one place.
+        self.slippage_bps_per_side = float(slippage_bps_per_side)
+        self.commission_per_share = float(commission_per_share)
+        self.commission_min_per_trade = float(commission_min_per_trade)
+        self.sec_fee_rate = float(sec_fee_rate)
+
+    def _round_trip_cost(self, close_qty: int, entry_price: float, exit_price: float, side_is_long: bool) -> float:
+        """Total dollar friction charged when a round-trip closes."""
+        if close_qty <= 0:
+            return 0.0
+        slip_pct = self.slippage_bps_per_side / 10000.0
+        entry_slip = slip_pct * entry_price * close_qty
+        exit_slip = slip_pct * exit_price * close_qty
+        entry_comm = max(self.commission_per_share * close_qty, self.commission_min_per_trade)
+        exit_comm = max(self.commission_per_share * close_qty, self.commission_min_per_trade)
+        # SEC fee is on the proceeds of a sale (the sell leg).
+        # For a long round-trip the sell is the exit; for a short the sell is the entry.
+        sec_notional = exit_price * close_qty if side_is_long else entry_price * close_qty
+        sec_fee = self.sec_fee_rate * sec_notional
+        return entry_slip + exit_slip + entry_comm + exit_comm + sec_fee
 
     async def on_fill(self, event: Event) -> None:
         payload = event.payload or {}
@@ -107,8 +149,17 @@ class TradeLedger:
 
         close_qty = min(abs(pos["qty"]), abs(signed_qty))
         direction = 1.0 if pos["qty"] > 0 else -1.0
-        pnl = (price - pos["avg"]) * close_qty * direction
+        gross_pnl = (price - pos["avg"]) * close_qty * direction
+        cost = self._round_trip_cost(
+            close_qty=int(close_qty),
+            entry_price=float(pos["avg"]),
+            exit_price=float(price),
+            side_is_long=(direction > 0),
+        )
+        pnl = gross_pnl - cost
         self.realized_pnl += pnl
+        self.gross_realized_pnl += gross_pnl
+        self.total_costs += cost
         self.equity += pnl
         self.equity_curve.append(self.equity)
         self.trades += 1
@@ -138,6 +189,8 @@ class TradeLedger:
                 "exit_ts": self._ts_to_iso(fill_ts),
                 "duration_sec": round(duration_sec, 2) if duration_sec is not None else None,
                 "pnl": round(pnl, 2),
+                "gross_pnl": round(gross_pnl, 2),
+                "cost": round(cost, 2),
                 "return_pct": round(return_pct, 6),
             }
         )
@@ -236,6 +289,11 @@ class TradeLedger:
             "initial_equity": round(self.initial_equity, 2),
             "final_equity": round(self.equity, 2),
             "realized_pnl": round(self.realized_pnl, 2),
+            "gross_realized_pnl": round(self.gross_realized_pnl, 2),
+            "total_costs": round(self.total_costs, 2),
+            "cost_drag_pct": round(
+                (self.total_costs / self.initial_equity) if self.initial_equity > 0 else 0.0, 6
+            ),
             "trades": self.trades,
             "wins": self.wins,
             "losses": self.losses,
@@ -695,7 +753,13 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
         max_hold_minutes=cfg.sim_max_hold_minutes,
         stop_buffer_ticks=cfg.sim_stop_buffer_ticks,
     )
-    ledger = TradeLedger(initial_equity=cfg.initial_capital)
+    ledger = TradeLedger(
+        initial_equity=cfg.initial_capital,
+        slippage_bps_per_side=cfg.slippage_bps_per_side,
+        commission_per_share=cfg.commission_per_share,
+        commission_min_per_trade=cfg.commission_min_per_trade,
+        sec_fee_rate=cfg.sec_fee_rate,
+    )
 
     bus.subscribe(EventType.ORDER_FILL, ledger.on_fill)
 
@@ -806,6 +870,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         vwap_max_window_bars=args.vwap_max_window_bars,
         sim_max_hold_minutes=args.sim_max_hold_minutes,
         sim_stop_buffer_ticks=args.sim_stop_buffer_ticks,
+        slippage_bps_per_side=args.slippage_bps_per_side,
+        commission_per_share=args.commission_per_share,
+        commission_min_per_trade=args.commission_min_per_trade,
+        sec_fee_rate=args.sec_fee_rate,
     )
     result = await run_backtest(df, cfg)
     print(json.dumps(result, indent=2))
@@ -847,6 +915,30 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Backtest-only buffer added to stop levels before triggering (price units).",
+    )
+    p.add_argument(
+        "--slippage-bps-per-side",
+        type=float,
+        default=1.5,
+        help="Per-leg slippage in basis points (default 1.5 -> ~3 bps round-trip).",
+    )
+    p.add_argument(
+        "--commission-per-share",
+        type=float,
+        default=0.0,
+        help="Per-share commission charged on each leg (Alpaca: 0).",
+    )
+    p.add_argument(
+        "--commission-min-per-trade",
+        type=float,
+        default=0.0,
+        help="Minimum dollar commission per leg.",
+    )
+    p.add_argument(
+        "--sec-fee-rate",
+        type=float,
+        default=0.000008,
+        help="SEC fee rate on sell-side notional (default 0.000008 ~ Alpaca live rate).",
     )
     p.add_argument("--output", default="", help="Optional path to write JSON result.")
     return p.parse_args()
