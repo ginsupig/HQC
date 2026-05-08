@@ -87,6 +87,8 @@ def _candidate_configs(
                 orb_min_range_pct=orb_min_range,
                 vwap_tolerance_pct=vwap_tol,
                 vwap_momentum_threshold_pct=vwap_momentum,
+                sim_max_hold_minutes=args.sim_max_hold_minutes,
+                sim_stop_buffer_ticks=args.sim_stop_buffer_ticks,
             )
         )
     return configs
@@ -241,6 +243,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vwap-momentum-grid", default="0.003,0.005,0.007")
     p.add_argument("--self-improve", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--adaptive-keep-per-param", type=int, default=2)
+    p.add_argument(
+        "--sim-max-hold-minutes",
+        type=int,
+        default=240,
+        help="Backtest-only hard time-stop for open positions (minutes).",
+    )
+    p.add_argument(
+        "--sim-stop-buffer-ticks",
+        type=float,
+        default=0.0,
+        help="Backtest-only buffer added to stop levels before triggering (price units).",
+    )
     p.add_argument("--output", default="")
     return p.parse_args()
 
