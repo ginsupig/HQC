@@ -449,6 +449,13 @@ class _SimulatedExitEngine:
         # in the live broker router does not forward stop_loss into the
         # ORDER_FILL payload, so we have to capture it here.
         self._pending_stops: Dict[str, float] = {}
+        # Decision IDs we issued for exits. The engine pops the position
+        # eagerly when emitting an exit (to suppress duplicate fires on the
+        # next tick); when the matching ORDER_FILL comes back the engine
+        # would otherwise treat it as a brand-new opposite-direction entry
+        # and start tracking a phantom short / long. Skipping fills whose
+        # decision_id is in this set keeps the position book consistent.
+        self._exit_decision_ids: set[str] = set()
         self.bus.subscribe(EventType.ORDER_CREATE, self.on_order_create)
         self.bus.subscribe(EventType.ORDER_FILL, self.on_fill)
         self.bus.subscribe(EventType.TICK, self.on_tick)
@@ -474,6 +481,12 @@ class _SimulatedExitEngine:
         payload = event.payload or {}
         status = str(payload.get("status", "")).upper()
         if status in {"CANCELED", "CANCELLED", "REJECTED", "ERROR"}:
+            return
+        decision_id = str(payload.get("decision_id") or "")
+        # Fill is the round-trip of an exit we issued; the position was
+        # already popped at emit time so accept the close as a no-op.
+        if decision_id and decision_id in self._exit_decision_ids:
+            self._exit_decision_ids.discard(decision_id)
             return
         action = str(payload.get("action") or payload.get("side") or "").upper()
         symbol = str(payload.get("asset") or payload.get("symbol") or "").upper()
@@ -586,10 +599,14 @@ class _SimulatedExitEngine:
 
         reason = "stop" if stop_hit else "time_stop"
         exit_action = "SELL" if qty > 0 else "BUY_TO_COVER"
-        decision_id = pos.get("decision_id") or f"SIMEXIT-{symbol}-{ts_ms}"
+        original_decision = pos.get("decision_id") or f"SIMEXIT-{symbol}-{ts_ms}"
+        exit_decision_id = f"{original_decision}-{reason}"
         # Drop the position before publishing so a re-fill in the same tick
-        # storm doesn't double-fire the exit.
+        # storm doesn't double-fire the exit, and remember the decision_id
+        # so we don't treat the round-trip fill as a new opposite-direction
+        # opening trade.
         self._positions.pop(symbol, None)
+        self._exit_decision_ids.add(exit_decision_id)
         self.bus.publish(
             Event(
                 type=EventType.ORDER_CREATE,
@@ -605,7 +622,7 @@ class _SimulatedExitEngine:
                     "stop_loss": round(price, 4),
                     "stop_loss_price": round(price, 4),
                     "status": "READY_FOR_BROKER",
-                    "decision_id": f"{decision_id}-{reason}",
+                    "decision_id": exit_decision_id,
                     "meta": {"simulated_exit": True, "reason": reason, "eod_liquidation": True},
                 },
             )
