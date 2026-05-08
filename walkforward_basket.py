@@ -183,7 +183,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input", required=True, help="Directory of per-symbol CSV files (or a single CSV).")
     p.add_argument("--glob", default="*.csv", help="Glob for CSV discovery when input is a directory.")
     p.add_argument("--benchmark-symbol", default="", help="If set, used as benchmark for every symbol; otherwise each symbol benchmarks against itself.")
-    p.add_argument("--strategy", choices=["orb", "vwap", "both"], default="both")
+    p.add_argument(
+        "--strategy",
+        choices=["orb", "vwap", "both", "gap_fade", "all"],
+        default="both",
+    )
     p.add_argument("--initial-capital", type=float, default=100000.0)
     p.add_argument("--train-days", type=int, default=30)
     p.add_argument("--test-days", type=int, default=10)

@@ -15,6 +15,7 @@ from core.execution.eod_liquidator import EODLiquidationManager
 from core.execution.slippage_controller import SlippageController
 from intelligence.candidate_ranker import CandidateRanker
 from risk.position_sizing.confidence_scaler import DynamicRiskSizer
+from strategies.gap_fade.overnight_gap_fade import OvernightGapFade
 from strategies.orb.equity_orb import USEquityORB
 from strategies.vwap.hunter_state_machine import USEquityVWAPHunter
 
@@ -52,6 +53,10 @@ class BacktestConfig:
     commission_per_share: float = 0.0
     commission_min_per_trade: float = 0.0
     sec_fee_rate: float = 0.000008
+    # Overnight gap-fade baseline (used as a known-edge sanity check).
+    gap_fade_trigger_pct: float = 0.005
+    gap_fade_stop_pct: float = 0.012
+    gap_fade_max_trades_per_day: int = 1
 
 
 class TradeLedger:
@@ -713,6 +718,7 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
 
     _orb = None
     _vwap = None
+    _gap_fade = None
     if cfg.strategy in {"orb", "both"}:
         _orb = USEquityORB(
             target_asset=symbol,
@@ -724,6 +730,36 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
             breakout_buffer_pct=cfg.orb_breakout_buffer_pct,
         )
     if cfg.strategy in {"vwap", "both"}:
+        _vwap = USEquityVWAPHunter(
+            target_asset=symbol,
+            bus=bus,
+            min_volume_shares=cfg.vwap_min_volume_shares,
+            vwap_tolerance_pct=cfg.vwap_tolerance_pct,
+            momentum_threshold_pct=cfg.vwap_momentum_threshold_pct,
+            max_daily_trades=cfg.vwap_max_daily_trades,
+            cooldown_bars=cfg.vwap_cooldown_bars,
+            min_stop_pct=cfg.vwap_min_stop_pct,
+            max_window_bars=cfg.vwap_max_window_bars,
+        )
+    if cfg.strategy in {"gap_fade", "all"}:
+        _gap_fade = OvernightGapFade(
+            target_asset=symbol,
+            bus=bus,
+            gap_trigger_pct=cfg.gap_fade_trigger_pct,
+            stop_pct=cfg.gap_fade_stop_pct,
+            max_trades_per_day=cfg.gap_fade_max_trades_per_day,
+        )
+    if cfg.strategy == "all" and _orb is None:
+        _orb = USEquityORB(
+            target_asset=symbol,
+            bus=bus,
+            range_minutes=cfg.orb_range_minutes,
+            max_trades=cfg.orb_max_trades,
+            cooldown_bars=cfg.orb_cooldown_bars,
+            min_range_pct=cfg.orb_min_range_pct,
+            breakout_buffer_pct=cfg.orb_breakout_buffer_pct,
+        )
+    if cfg.strategy == "all" and _vwap is None:
         _vwap = USEquityVWAPHunter(
             target_asset=symbol,
             bus=bus,
@@ -889,7 +925,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv", required=True, help="Path to OHLCV csv file.")
     p.add_argument("--symbol", default="SPY", help="Ticker to backtest.")
     p.add_argument("--benchmark-symbol", default="SPY", help="Benchmark ticker to use if present in CSV.")
-    p.add_argument("--strategy", choices=["orb", "vwap", "both"], default="both")
+    p.add_argument(
+        "--strategy",
+        choices=["orb", "vwap", "both", "gap_fade", "all"],
+        default="both",
+        help="'gap_fade' runs only the overnight-gap-fade baseline; 'all' runs ORB + VWAP + gap_fade.",
+    )
     p.add_argument("--initial-capital", type=float, default=100000.0)
     p.add_argument("--min-rank-score", type=float, default=4.75)
     p.add_argument("--orb-range-minutes", type=int, default=15)

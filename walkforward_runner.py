@@ -235,7 +235,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv", required=True, help="Path to OHLCV csv file.")
     p.add_argument("--symbol", default="SPY")
     p.add_argument("--benchmark-symbol", default="SPY")
-    p.add_argument("--strategy", choices=["orb", "vwap", "both"], default="both")
+    p.add_argument(
+        "--strategy",
+        choices=["orb", "vwap", "both", "gap_fade", "all"],
+        default="both",
+    )
     p.add_argument("--initial-capital", type=float, default=100000.0)
     p.add_argument("--train-days", type=int, default=20)
     p.add_argument("--test-days", type=int, default=5)
