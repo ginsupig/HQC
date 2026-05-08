@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -18,6 +19,8 @@ from risk.position_sizing.confidence_scaler import DynamicRiskSizer
 from strategies.gap_fade.overnight_gap_fade import OvernightGapFade
 from strategies.orb.equity_orb import USEquityORB
 from strategies.vwap.hunter_state_machine import USEquityVWAPHunter
+
+logger = logging.getLogger("BacktestRunner")
 
 
 @dataclass
@@ -57,6 +60,15 @@ class BacktestConfig:
     gap_fade_trigger_pct: float = 0.005
     gap_fade_stop_pct: float = 0.012
     gap_fade_max_trades_per_day: int = 1
+    # ML candidate-gate (backtest-only). When use_ml_gate is True the
+    # harness fits an MLCandidateGate on the leading ml_train_bars rows
+    # of the dataset (in-sample) and uses it to veto rule-based
+    # candidates that have a probability disagreeing with their
+    # direction. The remaining bars are the OOS test set.
+    use_ml_gate: bool = False
+    ml_train_bars: int = 5000
+    ml_threshold: float = 0.55
+    ml_horizon: int = 5
 
 
 class TradeLedger:
@@ -772,7 +784,36 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
             max_window_bars=cfg.vwap_max_window_bars,
         )
 
-    _ranker = CandidateRanker(bus=bus, benchmark=benchmark_symbol, min_score=cfg.min_rank_score)
+    ml_gate = None
+    test_bars = bars
+    if cfg.use_ml_gate:
+        try:
+            from intelligence.ml_pipeline.ml_candidate_gate import MLCandidateGate
+
+            train_n = max(0, min(int(cfg.ml_train_bars), max(0, len(bars) - 100)))
+            if train_n < 200:
+                logger.warning(
+                    "use_ml_gate set but only %d train bars available; gate disabled.", train_n
+                )
+            else:
+                train_bars = bars.iloc[:train_n].copy()
+                test_bars = bars.iloc[train_n:].copy()
+                ml_gate = MLCandidateGate(
+                    historical_df=train_bars,
+                    target_horizon=cfg.ml_horizon,
+                    threshold=cfg.ml_threshold,
+                )
+                # Extend gate's view to include the test window so live
+                # feature computation has enough lookback at the start of OOS.
+                ml_gate.update_history(bars)
+        except Exception as exc:
+            logger.error("Failed to fit ML candidate gate; running without: %s", exc, exc_info=True)
+            ml_gate = None
+            test_bars = bars
+
+    _ranker = CandidateRanker(
+        bus=bus, benchmark=benchmark_symbol, min_score=cfg.min_rank_score, ml_gate=ml_gate
+    )
     _sizer = DynamicRiskSizer(bus=bus, account_equity=cfg.initial_capital)
     _slip = SlippageController(bus=bus)
     router = AlpacaExecutionRouter(
@@ -802,7 +843,7 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
     await _slip.start()
     await router.start()
 
-    for _, row in bars.iterrows():
+    for _, row in test_bars.iterrows():
         for tick in _bar_to_ticks(row, symbol):
             bus.publish(tick)
         await asyncio.sleep(0)
@@ -816,15 +857,22 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
     await _slip.stop()
     await bus.stop()
 
-    start_ts = bars["timestamp"].iloc[0] if len(bars) else None
-    end_ts = bars["timestamp"].iloc[-1] if len(bars) else None
+    metrics_bars = test_bars
+    start_ts = metrics_bars["timestamp"].iloc[0] if len(metrics_bars) else None
+    end_ts = metrics_bars["timestamp"].iloc[-1] if len(metrics_bars) else None
     result = ledger.snapshot(start_ts=start_ts, end_ts=end_ts)
-    trading_days = list(pd.Series(bars["timestamp"].dt.normalize().drop_duplicates()).tolist())
+    trading_days = list(pd.Series(metrics_bars["timestamp"].dt.normalize().drop_duplicates()).tolist())
     daily_equity = _build_daily_equity(cfg.initial_capital, ledger.closed_trades, trading_days)
     daily_returns = _daily_returns_from_equity(daily_equity)
     annualized_sharpe = _annualized_sharpe(daily_returns)
     total_return_pct = (float(result["final_equity"]) / cfg.initial_capital) - 1.0 if cfg.initial_capital > 0 else 0.0
-    bench = _benchmark_metrics(benchmark_bars if not benchmark_bars.empty else bars)
+    benchmark_metrics_bars = benchmark_bars
+    if not benchmark_metrics_bars.empty and start_ts is not None and end_ts is not None:
+        benchmark_metrics_bars = benchmark_metrics_bars[
+            (benchmark_metrics_bars["timestamp"] >= start_ts)
+            & (benchmark_metrics_bars["timestamp"] <= end_ts)
+        ]
+    bench = _benchmark_metrics(benchmark_metrics_bars if not benchmark_metrics_bars.empty else metrics_bars)
     benchmark_total_return_pct = bench.get("benchmark_total_return_pct")
     excess_return_pct = None
     if benchmark_total_return_pct is not None:
@@ -862,7 +910,9 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
                 "vwap_min_stop_pct": cfg.vwap_min_stop_pct,
                 "vwap_max_window_bars": cfg.vwap_max_window_bars,
             },
-            "bars": int(len(bars)),
+            "bars": int(len(test_bars)),
+            "train_bars": int(len(bars) - len(test_bars)) if cfg.use_ml_gate else 0,
+            "ml_gate": ml_gate.stats() if ml_gate is not None else None,
             "from": str(start_ts) if start_ts is not None else None,
             "to": str(end_ts) if end_ts is not None else None,
             "daily_equity": daily_equity,
@@ -910,6 +960,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         commission_per_share=args.commission_per_share,
         commission_min_per_trade=args.commission_min_per_trade,
         sec_fee_rate=args.sec_fee_rate,
+        use_ml_gate=args.use_ml_gate,
+        ml_train_bars=args.ml_train_bars,
+        ml_threshold=args.ml_threshold,
+        ml_horizon=args.ml_horizon,
     )
     result = await run_backtest(df, cfg)
     print(json.dumps(result, indent=2))
@@ -981,6 +1035,14 @@ def parse_args() -> argparse.Namespace:
         default=0.000008,
         help="SEC fee rate on sell-side notional (default 0.000008 ~ Alpaca live rate).",
     )
+    p.add_argument(
+        "--use-ml-gate",
+        action="store_true",
+        help="Fit a probability gate on the leading ml-train-bars rows and use it as a candidate veto.",
+    )
+    p.add_argument("--ml-train-bars", type=int, default=5000, help="Bars at the head of the dataset reserved for the ML gate fit.")
+    p.add_argument("--ml-threshold", type=float, default=0.55, help="Min P(positive return) to pass a long; 1-threshold ceiling for shorts.")
+    p.add_argument("--ml-horizon", type=int, default=5, help="Number of bars ahead the ML gate predicts.")
     p.add_argument("--output", default="", help="Optional path to write JSON result.")
     return p.parse_args()
 

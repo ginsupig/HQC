@@ -119,8 +119,16 @@ class CandidateRanker:
         max_dist_vwap_pct: float = 0.012,
         decisions_path: str = "state/feedback/decisions.jsonl",
         dedup_window_sec: float = 2.0,  # --- FIX: Deduplication window ---
+        ml_gate: object | None = None,
     ) -> None:
         self.bus = bus
+        # Optional ML probability gate. Backtest-only veto layer; if
+        # provided, the ranker will consult it after the rule-based score
+        # passes and before publishing the RANKED event. The gate must
+        # expose a synchronous should_pass(symbol, action, ts_ms) method
+        # that returns an object with `.passed` (bool), `.probability`,
+        # and `.reason` attributes.
+        self.ml_gate = ml_gate
         self.book = RollingFeatureBook(benchmark=benchmark)
         self.liq_rs = LiquidityRelativeStrengthEngine(
             benchmark=benchmark,
@@ -256,6 +264,28 @@ class CandidateRanker:
         decision_id = str(uuid.uuid4())
         approved = score_card["score"] >= self.min_score and not score_card["hard_veto"]
 
+        ml_gate_meta: Dict[str, object] = {}
+        if approved and self.ml_gate is not None:
+            try:
+                gate_decision = self.ml_gate.should_pass(symbol=symbol, action=action, ts_ms=ts_ms)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] ML gate raised; treating as abstain. err=%s",
+                    symbol,
+                    exc,
+                )
+                gate_decision = None
+            if gate_decision is not None:
+                ml_gate_meta = {
+                    "ml_pass": bool(getattr(gate_decision, "passed", True)),
+                    "ml_probability": float(getattr(gate_decision, "probability", 0.5)),
+                    "ml_threshold": float(getattr(gate_decision, "threshold", 0.5)),
+                    "ml_reason": str(getattr(gate_decision, "reason", "")),
+                }
+                if not ml_gate_meta["ml_pass"]:
+                    approved = False
+                    score_card.setdefault("reasons", []).append("ml_gate_veto")
+
         decision_payload = {
             **payload,
             "decision_id": decision_id,
@@ -263,6 +293,7 @@ class CandidateRanker:
             "approved_by_ranker": approved,
             "rank_score": score_card["score"],
             "rank_components": score_card,
+            "ml_gate": ml_gate_meta,
         }
 
         self.feedback.write_decision(
