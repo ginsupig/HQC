@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import threading
 import queue
@@ -52,11 +53,17 @@ class UnifiedFeedbackLogger:
         # Non-blocking I/O Architecture with persistent file handles + batched flush.
         # Keeping handles open avoids per-line open/close syscalls; batched flush
         # bounds disk-flush frequency rather than fsyncing on every record.
-        self._log_queue: queue.Queue = queue.Queue()
+        # Bound the queue to prevent unbounded memory growth if the writer
+        # falls behind under sustained burst load (tick + fills storm).
+        queue_max = int(os.getenv("HQC_FEEDBACK_QUEUE_MAXSIZE", "100000"))
+        self._log_queue: queue.Queue = queue.Queue(maxsize=max(1000, queue_max))
         self._shutdown_event = threading.Event()
         self._file_handles: Dict[Path, TextIO] = {}
         self._flush_interval_sec: float = 0.5
         self._max_batch: int = 256
+        self._dropped_count: int = 0
+        self._dropped_lock = threading.Lock()
+        self._last_drop_warn_at: float = 0.0
 
         # Daemon thread ensures it doesn't prevent the main program from exiting
         self._worker_thread = threading.Thread(target=self._io_worker, name="LoggerIOWorker", daemon=True)
@@ -155,8 +162,21 @@ class UnifiedFeedbackLogger:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _append_jsonl(self, path: Path, payload: Dict[str, Any]) -> None:
-        # Puts the log item into memory instantly without blocking the async event loop
-        self._log_queue.put((path, payload))
+        # Puts the log item into memory instantly without blocking the async event loop.
+        # If the queue is saturated we drop and emit a rate-limited warning rather
+        # than blocking the trading thread on disk I/O.
+        try:
+            self._log_queue.put_nowait((path, payload))
+        except queue.Full:
+            with self._dropped_lock:
+                self._dropped_count += 1
+                now = time.monotonic()
+                if (now - self._last_drop_warn_at) > 5.0:
+                    self._last_drop_warn_at = now
+                    logger.error(
+                        "UnifiedFeedbackLogger queue saturated; dropped %d records",
+                        self._dropped_count,
+                    )
 
     def write_decision(self, payload: Dict[str, Any]) -> None:
         record = {
