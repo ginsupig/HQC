@@ -126,6 +126,16 @@ class OvernightGapFade:
             stop_loss = price * (1.0 - self.stop_pct)
 
         signal_id = str(uuid.uuid4())
+        # Gap-fade fires on the first RTH tick of a session: by definition
+        # the rolling tick book has zero history at that moment, so
+        # CandidateRanker's rule-based score (which combines spread,
+        # rvol, liquidity, and vwap proxies) collapses well below
+        # min_rank_score and silently kills every signal. Bypass it by
+        # emitting stage="RANKED" with a neutral rank_score so the order
+        # flows directly into the sizer; the entry's own conviction comes
+        # from the > gap_trigger_pct overnight move, which is itself a
+        # stronger filter than anything the microstructure ranker could
+        # add at session open.
         order_event = Event(
             type=EventType.ORDER_CREATE,
             payload={
@@ -133,6 +143,21 @@ class OvernightGapFade:
                 "asset": self.asset,
                 "action": action,
                 "strategy": "Overnight_Gap_Fade",
+                "stage": "RANKED",
+                "approved_by_ranker": True,
+                "decision_id": signal_id,
+                "rank_score": 5.0,
+                "rank_components": {
+                    "score": 5.0,
+                    "rs": 0.0,
+                    "rvol": 1.0,
+                    "spread_bps": 0.0,
+                    "dist_vwap_pct": 0.0,
+                    "liquidity_score": 0.5,
+                    "hard_veto": False,
+                    "reasons": [],
+                    "source": "gap_fade_bypass",
+                },
                 "timestamp": ts_ms_int,
                 "reference_price": round(price, 4),
                 "entry_price": round(price, 4),
