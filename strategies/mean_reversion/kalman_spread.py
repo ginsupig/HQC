@@ -180,12 +180,12 @@ class USEquityKalmanPairsTrader:
 
             if self.position == 1:
                 # long spread: long Y / short X
-                self._emit_order(self.asset_y, "SELL", price_y, hedge_role="lead_exit")
-                self._emit_order(self.asset_x, "BUY_TO_COVER", price_x, is_hedge=True, hedge_role="hedge_exit")
+                self._emit_order(self.asset_y, "SELL", price_y, hedge_role="lead_exit", timestamp_ms=current_ts_ms)
+                self._emit_order(self.asset_x, "BUY_TO_COVER", price_x, is_hedge=True, hedge_role="hedge_exit", timestamp_ms=current_ts_ms)
             else:
                 # short spread: short Y / long X
-                self._emit_order(self.asset_y, "BUY_TO_COVER", price_y, hedge_role="lead_exit")
-                self._emit_order(self.asset_x, "SELL", price_x, is_hedge=True, hedge_role="hedge_exit")
+                self._emit_order(self.asset_y, "BUY_TO_COVER", price_y, hedge_role="lead_exit", timestamp_ms=current_ts_ms)
+                self._emit_order(self.asset_x, "SELL", price_x, is_hedge=True, hedge_role="hedge_exit", timestamp_ms=current_ts_ms)
 
             self.position = 0
             self.last_signal_ts_ms = current_ts_ms
@@ -204,8 +204,8 @@ class USEquityKalmanPairsTrader:
                 self.asset_y,
                 self.asset_x,
             )
-            self._emit_order(self.asset_y, "SELL_SHORT", price_y, hedge_role="lead_entry")
-            self._emit_order(self.asset_x, "BUY", price_x, is_hedge=True, hedge_role="hedge_entry")
+            self._emit_order(self.asset_y, "SELL_SHORT", price_y, hedge_role="lead_entry", timestamp_ms=current_ts_ms)
+            self._emit_order(self.asset_x, "BUY", price_x, is_hedge=True, hedge_role="hedge_entry", timestamp_ms=current_ts_ms)
             self.position = -1
             self.last_signal_ts_ms = current_ts_ms
 
@@ -218,8 +218,8 @@ class USEquityKalmanPairsTrader:
                 self.asset_y,
                 self.asset_x,
             )
-            self._emit_order(self.asset_y, "BUY", price_y, hedge_role="lead_entry")
-            self._emit_order(self.asset_x, "SELL_SHORT", price_x, is_hedge=True, hedge_role="hedge_entry")
+            self._emit_order(self.asset_y, "BUY", price_y, hedge_role="lead_entry", timestamp_ms=current_ts_ms)
+            self._emit_order(self.asset_x, "SELL_SHORT", price_x, is_hedge=True, hedge_role="hedge_entry", timestamp_ms=current_ts_ms)
             self.position = 1
             self.last_signal_ts_ms = current_ts_ms
 
@@ -230,6 +230,7 @@ class USEquityKalmanPairsTrader:
         price: float,
         is_hedge: bool = False,
         hedge_role: str = "none",
+        timestamp_ms: Optional[int] = None,
     ) -> None:
         stop_loss_distance = price * self.nominal_stop_pct
         # Long entries (BUY) and short-cover exits (BUY_TO_COVER) get a stop
@@ -270,6 +271,7 @@ class USEquityKalmanPairsTrader:
                     "reasons": [],
                     "source": "kalman_pairs_bypass",
                 },
+                "timestamp": timestamp_ms,
                 "reference_price": round(price, 4),
                 "entry_price": round(price, 4),
                 "stop_loss_price": round(stop_loss, 4),
