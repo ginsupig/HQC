@@ -331,7 +331,17 @@ class CandidateRanker:
         )
         
         if not approved and score_card["reasons"]:
-            logger.info("       -> Veto Reasons: %s", score_card["reasons"])
+            # Surfaced at WARNING so reject reasons are visible without
+            # turning on DEBUG everywhere — important for catching cases
+            # where a strategy's signals are silently being filtered out.
+            logger.warning(
+                "[BLOCK] %s %s strategy=%s reasons=%s scr=%.2f",
+                symbol,
+                action,
+                strategy,
+                score_card["reasons"],
+                score_card["score"],
+            )
 
         if approved:
             self.bus.publish(Event(type=EventType.ORDER_CREATE, payload=decision_payload))
@@ -394,19 +404,30 @@ class CandidateRanker:
         hard_veto = bool(veto.get("hard_veto", False))
         reasons = list(veto.get("reasons", []))
 
+        # Tick-history sufficiency for trusting the microstructure metrics.
+        # If the book is below the engine's min_ticks_for_quality the rvol /
+        # vwap-distance numbers are effectively defaults; treating them as
+        # hard vetoes silently kills strategies that emit at session open
+        # (notably OvernightGapFade), so demote them to soft warnings.
+        symbol_ticks = self.liq_rs.ticks.get(symbol)
+        microstructure_reliable = (
+            symbol_ticks is not None and len(symbol_ticks) >= self.liq_rs.min_ticks_for_quality
+        )
+
         # Treat low relative volume as a hard veto at ranker gate to avoid thin-tape entries.
         if rvol < self.liq_rs.min_rvol:
-            hard_veto = True
             rvol_reason = f"rvol<{self.liq_rs.min_rvol:.2f}"
             if rvol_reason not in reasons:
                 reasons.append(rvol_reason)
+            if microstructure_reliable:
+                hard_veto = True
 
         base_score = float(scoring.get("total_score", 0.0))
 
         tod_mult = self._time_of_day_multiplier(symbol)
-        
+
         is_aligned_with_vwap = (action == "BUY" and dist_vwap_pct >= 0) or (action in {"SELL", "SELL_SHORT"} and dist_vwap_pct <= 0)
-        
+
         vwap_penalty = 1.0
         if not is_aligned_with_vwap:
             vwap_penalty = 0.85
@@ -414,7 +435,8 @@ class CandidateRanker:
 
         if abs(dist_vwap_pct) > self.max_dist_vwap_pct:
             reasons.append(f"overextended_vwap: {dist_vwap_pct:.4f}")
-            hard_veto = True
+            if microstructure_reliable:
+                hard_veto = True
 
         final_score = base_score * tod_mult * vwap_penalty
 
