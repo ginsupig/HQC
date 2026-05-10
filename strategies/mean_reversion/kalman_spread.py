@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, time, timezone, timedelta
 from typing import Dict, Optional
 
@@ -231,14 +232,44 @@ class USEquityKalmanPairsTrader:
         hedge_role: str = "none",
     ) -> None:
         stop_loss_distance = price * self.nominal_stop_pct
+        # Long entries (BUY) and short-cover exits (BUY_TO_COVER) get a stop
+        # below the entry; short entries (SELL_SHORT) and long-flatten exits
+        # (SELL) get a stop above the entry. The simple "BUY" in action
+        # check captures all four — the broker router skips protective
+        # stops on flatten orders anyway, so the value passed in for those
+        # cases never gets routed.
         stop_loss = price - stop_loss_distance if "BUY" in action else price + stop_loss_distance
 
+        # Kalman-pairs conviction comes from the spread's z-score and is
+        # independent of single-leg microstructure quality. Routing through
+        # the rule-based CandidateRanker drops every signal at session
+        # start (rvol/liq/spread defaults pull the score below
+        # min_rank_score). Emit pre-RANKED with neutral rank components,
+        # mirroring the gap-fade strategy, so the order flows directly to
+        # the sizer.
+        signal_id = str(uuid.uuid4())
         order_event = Event(
             type=EventType.ORDER_CREATE,
             payload={
+                "signal_id": signal_id,
                 "asset": asset,
                 "action": action,
                 "strategy": f"KalmanPair_{self.asset_y}_{self.asset_x}",
+                "stage": "RANKED",
+                "approved_by_ranker": True,
+                "decision_id": signal_id,
+                "rank_score": 5.0,
+                "rank_components": {
+                    "score": 5.0,
+                    "rs": 0.0,
+                    "rvol": 1.0,
+                    "spread_bps": 0.0,
+                    "dist_vwap_pct": 0.0,
+                    "liquidity_score": 0.5,
+                    "hard_veto": False,
+                    "reasons": [],
+                    "source": "kalman_pairs_bypass",
+                },
                 "reference_price": round(price, 4),
                 "entry_price": round(price, 4),
                 "stop_loss_price": round(stop_loss, 4),

@@ -17,6 +17,7 @@ from core.execution.slippage_controller import SlippageController
 from intelligence.candidate_ranker import CandidateRanker
 from risk.position_sizing.confidence_scaler import DynamicRiskSizer
 from strategies.gap_fade.overnight_gap_fade import OvernightGapFade
+from strategies.mean_reversion.kalman_spread import USEquityKalmanPairsTrader
 from strategies.orb.equity_orb import USEquityORB
 from strategies.vwap.hunter_state_machine import USEquityVWAPHunter
 
@@ -69,6 +70,17 @@ class BacktestConfig:
     ml_train_bars: int = 5000
     ml_threshold: float = 0.55
     ml_horizon: int = 5
+    # Kalman pairs trader (mean-reversion in spread). Requires a second
+    # tradable symbol; pass hedge_symbol and either include both symbols'
+    # bars in the input CSV or supply a separate --hedge-csv.
+    hedge_symbol: str = ""
+    pair_entry_z: float = 2.0
+    pair_exit_z: float = 0.5
+    pair_delta: float = 1e-4
+    pair_ve: float = 1e-3
+    pair_max_leg_staleness_sec: float = 30.0
+    pair_cooldown_seconds: float = 5.0
+    pair_nominal_stop_pct: float = 0.02
 
 
 class TradeLedger:
@@ -731,6 +743,28 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
     _orb = None
     _vwap = None
     _gap_fade = None
+    _pairs = None
+    hedge_bars: Optional[pd.DataFrame] = None
+    if cfg.strategy == "pairs":
+        if not cfg.hedge_symbol:
+            raise ValueError("strategy=pairs requires cfg.hedge_symbol to be set.")
+        hedge_bars = _safe_normalize_bars(df, cfg.hedge_symbol.upper())
+        if hedge_bars.empty:
+            raise ValueError(
+                f"No bars found for hedge symbol {cfg.hedge_symbol!r} in the input dataset."
+            )
+        _pairs = USEquityKalmanPairsTrader(
+            asset_y=symbol,
+            asset_x=cfg.hedge_symbol.upper(),
+            bus=bus,
+            delta=cfg.pair_delta,
+            ve=cfg.pair_ve,
+            entry_z=cfg.pair_entry_z,
+            exit_z=cfg.pair_exit_z,
+            max_leg_staleness_sec=cfg.pair_max_leg_staleness_sec,
+            cooldown_seconds=cfg.pair_cooldown_seconds,
+            nominal_stop_pct=cfg.pair_nominal_stop_pct,
+        )
     if cfg.strategy in {"orb", "both"}:
         _orb = USEquityORB(
             target_asset=symbol,
@@ -843,10 +877,32 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
     await _slip.start()
     await router.start()
 
-    for _, row in test_bars.iterrows():
-        for tick in _bar_to_ticks(row, symbol):
-            bus.publish(tick)
-        await asyncio.sleep(0)
+    if cfg.strategy == "pairs" and hedge_bars is not None:
+        # Interleave primary and hedge bars by timestamp so the Kalman
+        # filter sees both legs in chronological order. Restrict the hedge
+        # stream to the same time window the primary trades on (matters
+        # when use_ml_gate trims a leading chunk for training).
+        if len(test_bars) > 0:
+            t_lo = test_bars["timestamp"].iloc[0]
+            t_hi = test_bars["timestamp"].iloc[-1]
+            hedge_window = hedge_bars[
+                (hedge_bars["timestamp"] >= t_lo) & (hedge_bars["timestamp"] <= t_hi)
+            ]
+        else:
+            hedge_window = hedge_bars.iloc[0:0]
+        replay_df = pd.concat(
+            [test_bars.assign(_replay_symbol=symbol), hedge_window.assign(_replay_symbol=cfg.hedge_symbol.upper())],
+            ignore_index=True,
+        ).sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+        for _, row in replay_df.iterrows():
+            for tick in _bar_to_ticks(row, str(row["_replay_symbol"])):
+                bus.publish(tick)
+            await asyncio.sleep(0)
+    else:
+        for _, row in test_bars.iterrows():
+            for tick in _bar_to_ticks(row, symbol):
+                bus.publish(tick)
+            await asyncio.sleep(0)
 
     await bus._queue.join()
     await eod.force_liquidate_now(reason="backtest_end")
@@ -936,6 +992,12 @@ def _load_csv(path: Path) -> pd.DataFrame:
 
 async def _main_async(args: argparse.Namespace) -> None:
     df = _load_csv(Path(args.csv))
+    if args.strategy == "pairs":
+        if not args.hedge_symbol:
+            raise SystemExit("--strategy pairs requires --hedge-symbol")
+        if args.hedge_csv:
+            hedge_df = _load_csv(Path(args.hedge_csv))
+            df = pd.concat([df, hedge_df], ignore_index=True)
     cfg = BacktestConfig(
         symbol=args.symbol,
         benchmark_symbol=args.benchmark_symbol,
@@ -964,6 +1026,14 @@ async def _main_async(args: argparse.Namespace) -> None:
         ml_train_bars=args.ml_train_bars,
         ml_threshold=args.ml_threshold,
         ml_horizon=args.ml_horizon,
+        hedge_symbol=args.hedge_symbol,
+        pair_entry_z=args.pair_entry_z,
+        pair_exit_z=args.pair_exit_z,
+        pair_delta=args.pair_delta,
+        pair_ve=args.pair_ve,
+        pair_max_leg_staleness_sec=args.pair_max_leg_staleness_sec,
+        pair_cooldown_seconds=args.pair_cooldown_seconds,
+        pair_nominal_stop_pct=args.pair_nominal_stop_pct,
     )
     result = await run_backtest(df, cfg)
     print(json.dumps(result, indent=2))
@@ -977,11 +1047,29 @@ async def _main_async(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run offline HQC backtest with simulated execution.")
     p.add_argument("--csv", required=True, help="Path to OHLCV csv file.")
+    p.add_argument(
+        "--hedge-csv",
+        default="",
+        help="Path to OHLCV csv for the hedge leg (only when --strategy pairs). "
+             "If omitted, both symbols' bars must be present in --csv.",
+    )
+    p.add_argument(
+        "--hedge-symbol",
+        default="",
+        help="Hedge leg ticker for --strategy pairs (e.g. for an SPY/QQQ pair, --symbol SPY --hedge-symbol QQQ).",
+    )
+    p.add_argument("--pair-entry-z", type=float, default=2.0)
+    p.add_argument("--pair-exit-z", type=float, default=0.5)
+    p.add_argument("--pair-delta", type=float, default=1e-4)
+    p.add_argument("--pair-ve", type=float, default=1e-3)
+    p.add_argument("--pair-max-leg-staleness-sec", type=float, default=30.0)
+    p.add_argument("--pair-cooldown-seconds", type=float, default=5.0)
+    p.add_argument("--pair-nominal-stop-pct", type=float, default=0.02)
     p.add_argument("--symbol", default="SPY", help="Ticker to backtest.")
     p.add_argument("--benchmark-symbol", default="SPY", help="Benchmark ticker to use if present in CSV.")
     p.add_argument(
         "--strategy",
-        choices=["orb", "vwap", "both", "gap_fade", "all"],
+        choices=["orb", "vwap", "both", "gap_fade", "pairs", "all"],
         default="both",
         help="'gap_fade' runs only the overnight-gap-fade baseline; 'all' runs ORB + VWAP + gap_fade.",
     )
