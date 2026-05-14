@@ -75,6 +75,7 @@ def _build_cfg(args: argparse.Namespace) -> BacktestConfig:
         pair_max_leg_staleness_sec=args.pair_max_leg_staleness_sec,
         pair_cooldown_seconds=args.pair_cooldown_seconds,
         pair_nominal_stop_pct=args.pair_nominal_stop_pct,
+        pair_target_dollar_notional=args.pair_target_dollar_notional,
     )
 
 
@@ -196,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pair-max-leg-staleness-sec", type=float, default=30.0)
     p.add_argument("--pair-cooldown-seconds", type=float, default=120.0)
     p.add_argument("--pair-nominal-stop-pct", type=float, default=0.02)
+    p.add_argument("--pair-target-dollar-notional", type=float, default=10000.0)
     p.add_argument("--sim-max-hold-minutes", type=int, default=240)
     p.add_argument("--sim-stop-buffer-ticks", type=float, default=0.0)
     p.add_argument("--slippage-bps-per-side", type=float, default=1.5)

@@ -81,6 +81,7 @@ class BacktestConfig:
     pair_max_leg_staleness_sec: float = 30.0
     pair_cooldown_seconds: float = 5.0
     pair_nominal_stop_pct: float = 0.02
+    pair_target_dollar_notional: float = 10000.0
 
 
 class TradeLedger:
@@ -764,6 +765,7 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
             max_leg_staleness_sec=cfg.pair_max_leg_staleness_sec,
             cooldown_seconds=cfg.pair_cooldown_seconds,
             nominal_stop_pct=cfg.pair_nominal_stop_pct,
+            target_dollar_notional=cfg.pair_target_dollar_notional,
         )
     if cfg.strategy in {"orb", "both"}:
         _orb = USEquityORB(
@@ -1034,6 +1036,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         pair_max_leg_staleness_sec=args.pair_max_leg_staleness_sec,
         pair_cooldown_seconds=args.pair_cooldown_seconds,
         pair_nominal_stop_pct=args.pair_nominal_stop_pct,
+        pair_target_dollar_notional=args.pair_target_dollar_notional,
     )
     result = await run_backtest(df, cfg)
     print(json.dumps(result, indent=2))
@@ -1065,6 +1068,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pair-max-leg-staleness-sec", type=float, default=30.0)
     p.add_argument("--pair-cooldown-seconds", type=float, default=5.0)
     p.add_argument("--pair-nominal-stop-pct", type=float, default=0.02)
+    p.add_argument(
+        "--pair-target-dollar-notional",
+        type=float,
+        default=10000.0,
+        help="Per-leg target dollar notional for pairs entries (beta-hedged on x).",
+    )
     p.add_argument("--symbol", default="SPY", help="Ticker to backtest.")
     p.add_argument("--benchmark-symbol", default="SPY", help="Benchmark ticker to use if present in CSV.")
     p.add_argument(
