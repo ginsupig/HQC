@@ -57,6 +57,8 @@ class BacktestConfig:
     commission_per_share: float = 0.0
     commission_min_per_trade: float = 0.0
     sec_fee_rate: float = 0.000008
+    # Annual short-borrow rate. Liquid large caps ~0.25%; HTB names higher.
+    short_borrow_apr: float = 0.0025
     # Overnight gap-fade baseline (used as a known-edge sanity check).
     gap_fade_trigger_pct: float = 0.005
     gap_fade_stop_pct: float = 0.012
@@ -92,6 +94,7 @@ class TradeLedger:
         commission_per_share: float = 0.0,
         commission_min_per_trade: float = 0.0,
         sec_fee_rate: float = 0.0,
+        short_borrow_apr: float = 0.0025,
     ) -> None:
         self.initial_equity = float(initial_equity)
         self.equity = float(initial_equity)
@@ -118,8 +121,21 @@ class TradeLedger:
         self.commission_per_share = float(commission_per_share)
         self.commission_min_per_trade = float(commission_min_per_trade)
         self.sec_fee_rate = float(sec_fee_rate)
+        # Annual short-borrow rate. Charged per second of holding time on the
+        # short leg of any round trip. Default 0.25% APR is a reasonable
+        # easy-to-borrow rate for liquid large-cap names (JPM, BAC, GOOG,
+        # GOOGL, NVDA, AMD, etc). Hard-to-borrow names can be 1%-50%+, in
+        # which case the strategy probably shouldn't trade them.
+        self.short_borrow_apr = float(short_borrow_apr)
 
-    def _round_trip_cost(self, close_qty: int, entry_price: float, exit_price: float, side_is_long: bool) -> float:
+    def _round_trip_cost(
+        self,
+        close_qty: int,
+        entry_price: float,
+        exit_price: float,
+        side_is_long: bool,
+        duration_sec: Optional[float] = None,
+    ) -> float:
         """Total dollar friction charged when a round-trip closes."""
         if close_qty <= 0:
             return 0.0
@@ -132,7 +148,14 @@ class TradeLedger:
         # For a long round-trip the sell is the exit; for a short the sell is the entry.
         sec_notional = exit_price * close_qty if side_is_long else entry_price * close_qty
         sec_fee = self.sec_fee_rate * sec_notional
-        return entry_slip + exit_slip + entry_comm + exit_comm + sec_fee
+        # Borrow fee: only charged on the short leg, prorated by hold time.
+        # avg_short_notional is approximated by the entry-side price for shorts;
+        # for longs the borrow charge is zero.
+        borrow_fee = 0.0
+        if not side_is_long and duration_sec and duration_sec > 0 and self.short_borrow_apr > 0:
+            avg_notional = entry_price * close_qty
+            borrow_fee = avg_notional * self.short_borrow_apr * (duration_sec / (365.0 * 24.0 * 3600.0))
+        return entry_slip + exit_slip + entry_comm + exit_comm + sec_fee + borrow_fee
 
     async def on_fill(self, event: Event) -> None:
         payload = event.payload or {}
@@ -180,11 +203,16 @@ class TradeLedger:
         close_qty = min(abs(pos["qty"]), abs(signed_qty))
         direction = 1.0 if pos["qty"] > 0 else -1.0
         gross_pnl = (price - pos["avg"]) * close_qty * direction
+        entry_ts = pos.get("entry_ts")
+        duration_sec = None
+        if isinstance(entry_ts, int) and isinstance(fill_ts, int):
+            duration_sec = max(0, (fill_ts - entry_ts) / 1000.0)
         cost = self._round_trip_cost(
             close_qty=int(close_qty),
             entry_price=float(pos["avg"]),
             exit_price=float(price),
             side_is_long=(direction > 0),
+            duration_sec=duration_sec,
         )
         pnl = gross_pnl - cost
         self.realized_pnl += pnl
@@ -199,11 +227,6 @@ class TradeLedger:
         elif pnl < 0:
             self.losses += 1
             self.gross_loss += pnl
-
-        entry_ts = pos.get("entry_ts")
-        duration_sec = None
-        if isinstance(entry_ts, int) and isinstance(fill_ts, int):
-            duration_sec = max(0, (fill_ts - entry_ts) / 1000.0)
 
         basis = abs(float(pos["avg"]) * close_qty)
         return_pct = (pnl / basis) if basis > 0 else 0.0
@@ -872,6 +895,7 @@ async def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> Dict[str, objec
         commission_per_share=cfg.commission_per_share,
         commission_min_per_trade=cfg.commission_min_per_trade,
         sec_fee_rate=cfg.sec_fee_rate,
+        short_borrow_apr=cfg.short_borrow_apr,
     )
 
     bus.subscribe(EventType.ORDER_FILL, ledger.on_fill)
@@ -1024,6 +1048,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         commission_per_share=args.commission_per_share,
         commission_min_per_trade=args.commission_min_per_trade,
         sec_fee_rate=args.sec_fee_rate,
+        short_borrow_apr=args.short_borrow_apr,
         use_ml_gate=args.use_ml_gate,
         ml_train_bars=args.ml_train_bars,
         ml_threshold=args.ml_threshold,
@@ -1131,6 +1156,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.000008,
         help="SEC fee rate on sell-side notional (default 0.000008 ~ Alpaca live rate).",
+    )
+    p.add_argument(
+        "--short-borrow-apr",
+        type=float,
+        default=0.0025,
+        help="Annual short-borrow rate (default 0.25%% — easy-to-borrow large caps).",
     )
     p.add_argument(
         "--use-ml-gate",
