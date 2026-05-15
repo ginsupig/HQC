@@ -50,6 +50,13 @@ from typing import Deque, Dict, List, Optional
 
 import yaml
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 from core.engine.event_bus import Event, EventBus, EventType
 from core.engine.session_clock import MarketSessionClock, SessionPhase
 from core.execution.broker_router import AlpacaExecutionRouter
