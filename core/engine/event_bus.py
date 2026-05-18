@@ -28,6 +28,11 @@ class EventType(Enum):
     BOOK_SNAPSHOT = auto()
     MICROSTRUCTURE_ALERT = auto()
 
+    # Bar-cadence ticks emitted by TickResampler. Strategies validated on
+    # 1-minute bar data (e.g. the Kalman pairs trader) subscribe to this
+    # instead of raw TICK so their live tick cadence matches the backtest.
+    BAR_TICK = auto()
+
 
 @dataclass
 class Event:

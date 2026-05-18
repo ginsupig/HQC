@@ -39,6 +39,7 @@ class USEquityKalmanPairsTrader:
         cooldown_seconds: float = 5.0,  # <-- UPGRADE: Absolute time instead of ticks
         nominal_stop_pct: float = 0.02,
         target_dollar_notional: float = 10000.0,
+        tick_event_type: EventType = EventType.TICK,
     ) -> None:
         self.asset_y = str(asset_y).upper()
         self.asset_x = str(asset_x).upper()
@@ -81,7 +82,12 @@ class USEquityKalmanPairsTrader:
         # for heartbeat logging so an idle-but-healthy bot is observable.
         self.last_z_score: float = 0.0
 
-        self.bus.subscribe(EventType.TICK, self.on_tick)
+        # Which event channel drives the filter. Backtest replays bar-cadence
+        # ticks as EventType.TICK; the live runtime feeds EventType.BAR_TICK
+        # from TickResampler so the live cadence matches the validated
+        # backtest. on_tick is identical for either channel.
+        self._tick_event_type = tick_event_type
+        self.bus.subscribe(tick_event_type, self.on_tick)
 
     def _get_est_dt(self, timestamp_ms: Optional[int] = None) -> datetime:
         if timestamp_ms is not None:

@@ -63,6 +63,7 @@ from core.execution.broker_router import AlpacaExecutionRouter
 from core.execution.eod_liquidator import EODLiquidationManager
 from core.execution.slippage_controller import SlippageController
 from core.feedback.unified_logger import UnifiedFeedbackLogger
+from data.feeds.tick_resampler import TickResampler
 from data.feeds.ws_manager import AlpacaWebsocketManager
 from strategies.mean_reversion.kalman_spread import USEquityKalmanPairsTrader
 
@@ -307,9 +308,18 @@ async def _run(config_path: Path) -> None:
             cooldown_seconds=p.cooldown_seconds,
             nominal_stop_pct=p.nominal_stop_pct,
             target_dollar_notional=p.target_dollar_notional,
+            # Consume bar-cadence ticks from TickResampler, NOT raw trades.
+            # This is what makes the live filter behave like the backtest
+            # the strategy was validated on.
+            tick_event_type=EventType.BAR_TICK,
         )
         symbols.add(p.y)
         symbols.add(p.x)
+
+    # Resampler sits between the raw Alpaca feed (EventType.TICK) and the
+    # Kalman traders (EventType.BAR_TICK): buckets raw trades into 1-minute
+    # bars and re-emits 4 ticks/bar, matching backtest_runner._bar_to_ticks.
+    resampler = TickResampler(bus=bus, symbols=sorted(symbols), bar_seconds=60, ticks_per_bar=4)
 
     risk_monitor = PairsRiskMonitor(bus=bus, traders=traders, risk=cfg.risk)
 
@@ -331,12 +341,14 @@ async def _run(config_path: Path) -> None:
         extra={"pairs": [f"{p.y}/{p.x}" for p in cfg.pairs], "paper": cfg.paper, "simulate_only": simulate_only},
     )
     logger.info(
-        "Pairs runtime started: pairs=%d symbols=%d paper=%s simulate_only=%s",
+        "Pairs runtime started: pairs=%d symbols=%d paper=%s simulate_only=%s "
+        "feed=raw->TickResampler(1m,4t/bar)->BAR_TICK",
         len(traders),
         len(symbols),
         cfg.paper,
         simulate_only,
     )
+    logger.info("TickResampler active for %d symbols (resampler=%s)", len(symbols), resampler.stats())
 
     # Block until the bus stops or a SIGINT is received.
     stop_event = asyncio.Event()
