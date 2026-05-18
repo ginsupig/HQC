@@ -359,10 +359,39 @@ async def _run(config_path: Path) -> None:
             stop_event.set()
         bus.subscribe(EventType.SYSTEM_SHUTDOWN, _on_shutdown)
 
+    async def _heartbeat(interval_sec: float = 120.0) -> None:
+        """Periodic liveness log so an idle-but-healthy bot is observable.
+
+        Prints each pair's latest spread z-score, Kalman beta, and position
+        state. A bot 'doing nothing' is correct behavior for pairs trading
+        until a spread dislocates past entry_z — the heartbeat makes that
+        visible instead of leaving a silent console."""
+        pos_label = {0: "flat", 1: "long-spread", -1: "short-spread"}
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)
+                return  # stop_event fired
+            except asyncio.TimeoutError:
+                pass
+            parts = []
+            for label, t in traders.items():
+                if not t.is_initialized:
+                    parts.append(f"{label} warming-up")
+                    continue
+                entry = traders[label].entry_z
+                near = "  <-- near trigger" if abs(t.last_z_score) >= 0.8 * entry else ""
+                parts.append(
+                    f"{label} z={t.last_z_score:+.2f}/{entry:.1f} "
+                    f"beta={t.beta:.3f} {pos_label.get(t.position, '?')}{near}"
+                )
+            logger.info("[heartbeat] %s", "  |  ".join(parts))
+
     await _watch_shutdown()
+    heartbeat_task = asyncio.create_task(_heartbeat())
     await stop_event.wait()
 
     logger.info("Stopping runtime...")
+    heartbeat_task.cancel()
     try:
         await feed.stop()
     except Exception as exc:

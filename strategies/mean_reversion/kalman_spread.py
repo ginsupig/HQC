@@ -76,7 +76,10 @@ class USEquityKalmanPairsTrader:
         self.market_close = time(16, 0)
 
         # <-- UPGRADE: Tracking timestamps rather than arbitrary tick counters
-        self.last_signal_ts_ms: int = -10_000_000  
+        self.last_signal_ts_ms: int = -10_000_000
+        # Latest innovation z-score, updated every processed tick. Exposed
+        # for heartbeat logging so an idle-but-healthy bot is observable.
+        self.last_z_score: float = 0.0
 
         self.bus.subscribe(EventType.TICK, self.on_tick)
 
@@ -169,6 +172,8 @@ class USEquityKalmanPairsTrader:
             self.latest_prices[self.asset_y],
             self.latest_prices[self.asset_x],
         )
+        # Expose the latest innovation z-score for heartbeat / monitoring.
+        self.last_z_score = float(current_z)
 
         await self._evaluate_signals(current_z, timestamp_ms)
 
