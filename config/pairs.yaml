@@ -1,9 +1,21 @@
 # Kalman pairs deployment config.
 #
-# Two-pair basket validated by walk-forward + significance test (p<0.05)
-# on 2 years of Alpaca 1-minute history:
-#   JPM/BAC : strong edge (47/47 wf wins, p=0.007, ~$20k OOS PnL on $10k notional)
-#   GOOG/GOOGL : tight structural arb edge (p=0.031, low trade count, high PF)
+# A1 multiple-comparisons audit (docs/A1_multiple_comparisons.md) re-scored
+# the family of 6+ pair tests this codebase has run. Verdict:
+#   JPM/BAC      : raw p=0.007. Survives Bonferroni at the strict family
+#                  interpretation (n=6, threshold 0.00833) by 0.0013; FAILS
+#                  at the inclusive interpretation (n=8) that counts the
+#                  KO/PEP and XOM/CVX entry_z retries. Status: deployed
+#                  marginally; A2 (parameter sensitivity) is the gating
+#                  prerequisite to confirm the edge is a plateau and not
+#                  a knife-edge artifact at (1.5, 0.4). Do not add new
+#                  pairs until A2 is green for this one.
+#   GOOG/GOOGL   : raw p=0.031. FAILS both Bonferroni and BH-FDR at any
+#                  family size considered. Demoted from the deployed
+#                  basket until more OOS data tightens the CI. The
+#                  block below is commented out, not deleted, so it is
+#                  one-line re-enabled once the corrected significance
+#                  bar is cleared.
 #
 # To start in paper mode against Alpaca, set environment first:
 #   ALPACA_API_KEY=...
@@ -29,13 +41,18 @@ pairs:
     nominal_stop_pct: 0.02
     target_dollar_notional: 10000
 
-  - y: GOOG
-    x: GOOGL
-    entry_z: 1.5
-    exit_z: 0.4
-    cooldown_seconds: 120
-    nominal_stop_pct: 0.02
-    target_dollar_notional: 10000
+  # GOOG/GOOGL — DEMOTED by A1 multiple-comparisons audit (2026-05-25).
+  # Raw p=0.031 does not survive correction at family size >= 2. Re-enable
+  # only after (a) more OOS windows tighten the CI below the corrected
+  # threshold for the then-current family, or (b) the pair is re-validated
+  # in a pre-registered, family-sized study.
+  # - y: GOOG
+  #   x: GOOGL
+  #   entry_z: 1.5
+  #   exit_z: 0.4
+  #   cooldown_seconds: 120
+  #   nominal_stop_pct: 0.02
+  #   target_dollar_notional: 10000
 
 risk:
   initial_capital: 100000
