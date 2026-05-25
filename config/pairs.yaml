@@ -1,0 +1,44 @@
+# Kalman pairs deployment config.
+#
+# Two-pair basket validated by walk-forward + significance test (p<0.05)
+# on 2 years of Alpaca 1-minute history:
+#   JPM/BAC : strong edge (47/47 wf wins, p=0.007, ~$20k OOS PnL on $10k notional)
+#   GOOG/GOOGL : tight structural arb edge (p=0.031, low trade count, high PF)
+#
+# To start in paper mode against Alpaca, set environment first:
+#   ALPACA_API_KEY=...
+#   ALPACA_API_SECRET=...
+# then:
+#   python main_pairs.py --config config/pairs.yaml
+#
+# To deploy LIVE (real money) you must set BOTH:
+#   paper: false      (here)
+#   HQC_ENABLE_LIVE_TRADING=1   (env)
+# Otherwise the runtime refuses to start. Don't disable that gate without
+# 30 days of clean paper-trading evidence.
+
+paper: true
+feed: iex     # IEX is free; switch to "sip" only if your Alpaca plan covers it.
+
+pairs:
+  - y: JPM
+    x: BAC
+    entry_z: 1.5
+    exit_z: 0.4
+    cooldown_seconds: 120
+    nominal_stop_pct: 0.02
+    target_dollar_notional: 10000
+
+  - y: GOOG
+    x: GOOGL
+    entry_z: 1.5
+    exit_z: 0.4
+    cooldown_seconds: 120
+    nominal_stop_pct: 0.02
+    target_dollar_notional: 10000
+
+risk:
+  initial_capital: 100000
+  daily_loss_pct_kill: 0.02       # Halt today if cumulative -2% drawdown.
+  beta_drift_pct_kill: 0.30       # Halt a pair if Kalman beta drifts >30% from rolling mean.
+  beta_drift_window_min: 60       # Rolling window for the baseline.

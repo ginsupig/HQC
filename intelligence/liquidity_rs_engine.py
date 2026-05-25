@@ -628,11 +628,22 @@ class LiquidityRelativeStrengthEngine:
         reasons: List[str] = []
         hard_veto = False
 
-        # Hard veto checks
+        # Hard veto checks. The microstructure metrics below are only
+        # meaningful once we have at least min_ticks_for_quality ticks for
+        # the symbol — at the very first tick of an RTH session the rolling
+        # tick book has just been reset, so ``liquidity_score`` returns the
+        # neutral 0.50 default and ``spread_bps`` can be computed off a
+        # single bar's OHLC reconstruction. Hard-vetoing on those values
+        # silently kills any strategy that emits at session open
+        # (notably OvernightGapFade), so we degrade them to soft warnings
+        # when the book is too thin to trust.
         ticks = self.ticks.get(symbol)
+        tick_count = len(ticks) if ticks else 0
+        microstructure_reliable = tick_count >= self.min_ticks_for_quality
+
         if not ticks:
             reasons.append("no_tick_history")
-            hard_veto = True
+            # Soft only — downstream sizer/broker will still validate price.
 
         if reference_price <= 0:
             reasons.append("invalid_reference_price")
@@ -640,16 +651,19 @@ class LiquidityRelativeStrengthEngine:
 
         if spread_bps > self.max_spread_bps:
             reasons.append(f"spread_bps>{self.max_spread_bps:.1f}")
-            hard_veto = True
+            if microstructure_reliable:
+                hard_veto = True
 
         # Soft warnings (don't veto)
         if rvol < self.min_rvol:
             reasons.append(f"rvol<{self.min_rvol:.2f}")
 
-        # Hard veto: insufficient liquidity
+        # Hard veto: insufficient liquidity. Only enforced once we have
+        # enough ticks for the score to mean anything.
         if liquidity_score < self.min_liquidity_score:
             reasons.append(f"liq_score<{self.min_liquidity_score:.2f}")
-            hard_veto = True
+            if microstructure_reliable:
+                hard_veto = True
 
         # RS alignment checks
         rs_alignment = 0.0

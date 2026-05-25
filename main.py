@@ -989,6 +989,32 @@ async def run_trading_node_forever() -> None:
 
 
 if __name__ == "__main__":
+    # --- Legacy-system guard ------------------------------------------------
+    # This entrypoint wires the ORB + VWAP strategies. Both were validated by
+    # walk-forward + significance testing (47 OOS windows, 7 symbols, realistic
+    # costs) as having statistically significant NEGATIVE edge (pooled p=0.995
+    # EDGE-). Running this for trading loses money in expectation.
+    #
+    # The validated, deployable system is the Kalman pairs basket in
+    # main_pairs.py. This guard prevents accidentally trading the dead
+    # strategies; override only if you are deliberately re-testing them.
+    if os.getenv("HQC_ALLOW_LEGACY_MAIN", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        sys.stderr.write(
+            "\n"
+            "=========================================================================\n"
+            " main.py runs the LEGACY ORB + VWAP system.\n"
+            " Both strategies were validated as having NEGATIVE edge (p=0.995 EDGE-).\n"
+            " Running this for trading loses money in expectation.\n"
+            "\n"
+            " The deployable system is the Kalman pairs basket:\n"
+            "     python main_pairs.py --config config/pairs.yaml\n"
+            "\n"
+            " To run this legacy entrypoint anyway (e.g. for re-testing), set:\n"
+            "     HQC_ALLOW_LEGACY_MAIN=1\n"
+            "=========================================================================\n"
+        )
+        sys.exit(1)
+
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 

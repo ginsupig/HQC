@@ -87,6 +87,12 @@ def _candidate_configs(
                 orb_min_range_pct=orb_min_range,
                 vwap_tolerance_pct=vwap_tol,
                 vwap_momentum_threshold_pct=vwap_momentum,
+                sim_max_hold_minutes=args.sim_max_hold_minutes,
+                sim_stop_buffer_ticks=args.sim_stop_buffer_ticks,
+                slippage_bps_per_side=args.slippage_bps_per_side,
+                commission_per_share=args.commission_per_share,
+                commission_min_per_trade=args.commission_min_per_trade,
+                sec_fee_rate=args.sec_fee_rate,
             )
         )
     return configs
@@ -229,7 +235,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv", required=True, help="Path to OHLCV csv file.")
     p.add_argument("--symbol", default="SPY")
     p.add_argument("--benchmark-symbol", default="SPY")
-    p.add_argument("--strategy", choices=["orb", "vwap", "both"], default="both")
+    p.add_argument(
+        "--strategy",
+        choices=["orb", "vwap", "both", "gap_fade", "all"],
+        default="both",
+    )
     p.add_argument("--initial-capital", type=float, default=100000.0)
     p.add_argument("--train-days", type=int, default=20)
     p.add_argument("--test-days", type=int, default=5)
@@ -241,6 +251,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vwap-momentum-grid", default="0.003,0.005,0.007")
     p.add_argument("--self-improve", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--adaptive-keep-per-param", type=int, default=2)
+    p.add_argument(
+        "--sim-max-hold-minutes",
+        type=int,
+        default=240,
+        help="Backtest-only hard time-stop for open positions (minutes).",
+    )
+    p.add_argument(
+        "--sim-stop-buffer-ticks",
+        type=float,
+        default=0.0,
+        help="Backtest-only buffer added to stop levels before triggering (price units).",
+    )
+    p.add_argument("--slippage-bps-per-side", type=float, default=1.5)
+    p.add_argument("--commission-per-share", type=float, default=0.0)
+    p.add_argument("--commission-min-per-trade", type=float, default=0.0)
+    p.add_argument("--sec-fee-rate", type=float, default=0.000008)
     p.add_argument("--output", default="")
     return p.parse_args()
 
