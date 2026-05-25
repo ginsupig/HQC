@@ -8,19 +8,24 @@ This README is a faithful record of what the system does, what it has been prove
 
 ## Quick verdict
 
-| Strategy | Wired? | Validated edge? | Deployed? |
-|---|---|---|---|
-| **Kalman pairs (JPM/BAC, GOOG/GOOGL)** | yes | **EDGE+** p=0.007 / p=0.031 OOS | **yes** (`main_pairs.py`, paper) |
-| ORB (Opening Range Breakout) | yes | **EDGE−** p=0.995 (loses) | no — guarded |
-| VWAP Hunter | yes | **EDGE−** p=0.995 (loses) | no — guarded |
-| ORB + VWAP + ML gate | yes | no lift, IR −1.6 | no — guarded |
-| Overnight gap-fade | yes | no edge, p=0.901 | no |
-| KO/PEP pairs | yes | no edge, p=0.142 | no |
-| XOM/CVX pairs | yes | no edge, p=0.189 | no |
-| AMD/NVDA pairs | yes | no edge (p≈0.14) | no |
-| AAPL/META pairs | yes | n too small to call | no |
+Significance bar updated 2026-05-25 (A1 audit, `docs/A1_multiple_comparisons.md`): bootstrap 95% CI lower bound > 0 AND family-wise / FDR-corrected p < 0.05. Single-test p < 0.05 is **no longer sufficient**.
 
-**The deployable system is the Kalman pairs basket.** Everything else has either been proven to lose, or has wide-CI inconclusive results that don't justify capital. They are retained in the repository because the harness compares against them and because `git` history is the appropriate archive for failed experiments.
+| Strategy | Wired? | Raw p | Corrected verdict (family) | Deployed? |
+|---|---|---|---|---|
+| **Kalman pairs — JPM/BAC** | yes | 0.007 | Survives Bonferroni at strict family n=6 by 0.0013 — **MARGINAL**; A2 gating | **yes (sole pair)** |
+| Kalman pairs — GOOG/GOOGL | yes | 0.031 | Fails Bonferroni and BH-FDR at any reasonable family — **DEMOTED** | no (config-commented) |
+| ORB (Opening Range Breakout) | yes | n/a | **EDGE−** pooled p=0.995 (loses) | no — guarded |
+| VWAP Hunter | yes | n/a | **EDGE−** pooled p=0.995 (loses) | no — guarded |
+| ORB + VWAP + ML gate | yes | n/a | no lift, IR −1.6 | no — guarded |
+| Overnight gap-fade | yes | n/a | no edge, p=0.901 | no |
+| KO/PEP pairs | yes | 0.142 (best) | no edge | no |
+| XOM/CVX pairs | yes | 0.143 | no edge | no |
+| AMD/NVDA pairs | yes | ≈0.14 | no edge | no |
+| AAPL/META pairs | yes | small-n inconclusive | not actioned | no |
+
+**Deployed basket is now a single pair, JPM/BAC, on marginal post-correction significance.** A2 (parameter sensitivity) is the gating prerequisite to confirm the edge is a plateau and not a knife-edge artifact at exactly (entry_z=1.5, exit_z=0.4). If A2 shows a plateau, JPM/BAC remains. If it shows a spike, the conservative-family interpretation (n=8) becomes the truth and JPM/BAC should also be demoted.
+
+All non-deployed strategies are retained as harness baselines and as documented disproofs; `git` history is the proper archive for failed experiments.
 
 ---
 
