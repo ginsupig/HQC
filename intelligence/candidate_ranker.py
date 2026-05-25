@@ -181,6 +181,9 @@ class CandidateRanker:
         symbol = str(symbol).upper()
         ts_ms = self._normalize_ts_ms(ts_raw)
         tick_dt_est = datetime.fromtimestamp(ts_ms / 1000.0, tz=pytz.utc).astimezone(self._tz)
+        tick_time = tick_dt_est.time()
+        if tick_time < self._market_open or tick_time >= time(16, 0):
+            return
         tick_date = tick_dt_est.date()
         if self._current_trading_date != tick_date:
             self.book.reset_daily()
@@ -422,6 +425,24 @@ class CandidateRanker:
             if microstructure_reliable:
                 hard_veto = True
 
+        # Thin bar veto: instant rvol < 0.25 signals a near-empty bar — skip entirely.
+        instant_rvol = self.book.rel_volume(symbol)
+        if instant_rvol < 0.25:
+            hard_veto = True
+            if "thin_bar" not in reasons:
+                reasons.append("thin_bar")
+
+        # EOD window veto: block new entries in the last 5 minutes of session.
+        ticks = self.book.ticks.get(symbol)
+        if ticks:
+            last_tick_dt = datetime.fromtimestamp(
+                ticks[-1].ts_ms / 1000.0, tz=pytz.utc
+            ).astimezone(self._tz)
+            if last_tick_dt.time() >= time(15, 55):
+                hard_veto = True
+                if "eod_window" not in reasons:
+                    reasons.append("eod_window")
+
         base_score = float(scoring.get("total_score", 0.0))
 
         tod_mult = self._time_of_day_multiplier(symbol)
@@ -472,7 +493,7 @@ class CandidateRanker:
             return max(1.0, decay_mult)
             
         if self._lunch_start <= t <= self._lunch_end:
-            return 0.82
+            return 0.65
             
         if time(15, 0) <= t <= time(15, 50):
             return 1.05

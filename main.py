@@ -16,7 +16,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _load_settings(path: str = "config/settings.yaml") -> dict:
+def _load_settings(path: Optional[str] = None) -> dict:
+    if path is None:
+        path = str(Path(__file__).parent / "config" / "settings.yaml")
     try:
         with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -456,9 +458,9 @@ class TradingNode:
 
             if self.state_machine.current_state == SystemState.WARMING_UP:
                 if self._warming_up_start_time is None:
-                    self._warming_up_start_time = asyncio.get_event_loop().time()
+                    self._warming_up_start_time = asyncio.get_running_loop().time()
 
-                elapsed_sec = asyncio.get_event_loop().time() - self._warming_up_start_time
+                elapsed_sec = asyncio.get_running_loop().time() - self._warming_up_start_time
                 if elapsed_sec > self._warming_up_timeout_sec:
                     logger.error(
                         "System stuck in WARMING_UP for %.1f seconds. No market data received. Auto-halting.",
@@ -755,7 +757,7 @@ class TradingNode:
             return
 
         self.state_machine.transition_to(SystemState.WARMING_UP, "Services initialized.")
-        self._warming_up_start_time = asyncio.get_event_loop().time()
+        self._warming_up_start_time = asyncio.get_running_loop().time()
 
         try:
             await self.data_feed.start()

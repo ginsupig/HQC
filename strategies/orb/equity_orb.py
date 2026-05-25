@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from datetime import datetime, time, timedelta, date
 from enum import Enum, auto
-from typing import Optional
+from typing import Deque, Optional
 
 import pytz
 
@@ -77,6 +78,8 @@ class USEquityORB:
         self.last_trigger_bar = -10_000
         self.long_breakout_streak = 0
         self.short_breakdown_streak = 0
+        self._volume_window: Deque[float] = deque(maxlen=20)
+        self._min_volume_ratio: float = 0.20
 
         self.bus.subscribe(EventType.TICK, self.on_tick)
 
@@ -97,6 +100,7 @@ class USEquityORB:
         self.last_trigger_bar = -10_000
         self.long_breakout_streak = 0
         self.short_breakdown_streak = 0
+        self._volume_window.clear()
 
         est_open = self.tz.localize(datetime.combine(current_date, self.market_open))
         end_dt = est_open + timedelta(minutes=self.range_minutes)
@@ -149,6 +153,8 @@ class USEquityORB:
         if price <= 0:
             return
 
+        volume = float(payload.get("volume") or 0.0)
+
         timestamp_ms = payload.get("timestamp")
         current_dt = self._get_est_time(timestamp_ms)
         current_time = current_dt.time()
@@ -161,6 +167,8 @@ class USEquityORB:
             return
 
         self.bar_count += 1
+        if volume > 0:
+            self._volume_window.append(volume)
 
         if self.range_end_time is None:
             return
@@ -200,7 +208,15 @@ class USEquityORB:
         if self.state == ORBState.ACTIVE and self.trades_today < self.max_trades:
             await self._evaluate_breakout(price, timestamp_ms)
 
+    def _volume_is_sufficient(self) -> bool:
+        if len(self._volume_window) < 5:
+            return True
+        avg = sum(self._volume_window) / len(self._volume_window)
+        return avg <= 0 or (self._volume_window[-1] / avg) >= self._min_volume_ratio
+
     async def _evaluate_breakout(self, current_price: float, timestamp_ms: Optional[int]) -> None:
+        if not self._volume_is_sufficient():
+            return
         if self._in_cooldown():
             return
 

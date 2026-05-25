@@ -223,13 +223,20 @@ class AlpacaExecutionRouter:
 
         side, position_intent = self._alpaca_side(action)
 
+        spread_bps = float(
+            (payload.get("rank_components") or {}).get("spread_bps") or 0.0
+        )
+        order_type, limit_price = self._choose_order_type(action, entry_price, spread_bps)
+
         order_data: Dict[str, Any] = {
             "symbol": str(asset).upper(),
             "qty": str(shares),
             "side": side,
-            "type": "market",
+            "type": order_type,
             "time_in_force": "day",
         }
+        if limit_price is not None:
+            order_data["limit_price"] = str(round(limit_price, 2))
 
         requires_protective_stop = self._requires_protective_stop(action=action, force_exit=force_exit)
         if requires_protective_stop:
@@ -808,6 +815,19 @@ class AlpacaExecutionRouter:
             return max(0.0, (now_utc - parsed.astimezone(timezone.utc)).total_seconds())
         except Exception:
             return None
+
+    @staticmethod
+    def _choose_order_type(action: str, price: float, spread_bps: float) -> tuple[str, Optional[float]]:
+        is_buy = action.upper() in {"BUY", "BUY_TO_COVER", "BUY_TO_OPEN"}
+        if spread_bps >= 25:
+            offset = price * 0.0002
+            limit = price + offset if is_buy else price - offset
+            return "limit", limit
+        if spread_bps >= 15:
+            offset = price * 0.0001
+            limit = price + offset if is_buy else price - offset
+            return "limit", limit
+        return "market", None
 
     @staticmethod
     def _alpaca_side(action: str) -> tuple[str, Optional[str]]:
