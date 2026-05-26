@@ -148,13 +148,37 @@ class EventBus:
                 event = await self._queue.get()
                 callbacks = self._subscribers.get(event.type, [])
 
+                # Each callback's scheduling is isolated. A handler that
+                # raises synchronously (e.g. a non-coroutine handler that
+                # blows up on call, or a coroutine function whose body
+                # raises before the first await) MUST NOT prevent the
+                # other handlers for this event from being scheduled.
+                # This is the live safeguard for PairsRiskMonitor and
+                # similar critical subscribers — without it, one bad
+                # handler can silently starve every peer subscribed to
+                # the same event type.
                 for callback in callbacks:
-                    task = asyncio.create_task(callback(event))
-                    self._track_task(task)
+                    try:
+                        coro = callback(event)
+                        task = asyncio.create_task(coro)
+                        self._track_task(task)
+                    except Exception as exc:
+                        cb_name = getattr(callback, "__qualname__", repr(callback))
+                        logger.error(
+                            "EventBus: handler %s raised synchronously on %s; "
+                            "isolated, other handlers continue. err=%s",
+                            cb_name,
+                            event.type.name,
+                            exc,
+                            exc_info=True,
+                        )
 
                 self._queue.task_done()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                # Defensive: an exception from queue.get() or task_done()
+                # shouldn't tight-loop the worker if it keeps recurring.
                 logger.error("EventBus worker encountered an error: %s", e, exc_info=True)
+                await asyncio.sleep(0.1)
