@@ -16,7 +16,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -30,6 +30,11 @@ import a2_analyze  # noqa: E402
 import a3_analyze  # noqa: E402
 import analyze_walkforward  # noqa: E402
 import multiple_comparisons  # noqa: E402
+
+D3_WITH_TIME_STOP = "with_ts"
+D3_WITHOUT_TIME_STOP = "without_ts"
+UNKNOWN_BUCKET_SORT_ORDER = 9
+INVALID_P_SORT_ORDER = 9
 
 
 @dataclass
@@ -220,7 +225,7 @@ def _summarize_a2(path: Path, pair: CandidatePair, alpha: float) -> GateResult:
         return GateResult("PENDING", "no A2 rows", str(path))
     family_size = len(rows)
     bonf_threshold = alpha / family_size
-    by_slice: Dict[tuple[float, float], List[dict]] = {}
+    by_slice: Dict[Tuple[float, float], List[dict]] = {}
     for row in rows:
         by_slice.setdefault((row["delta"], row["ve"]), []).append(row)
     deployed = (_pair_value(pair, "entry_z", 1.5), _pair_value(pair, "exit_z", 0.4))
@@ -301,7 +306,7 @@ def _summarize_a4(path: Path, pair_label: str) -> GateResult:
 def _summarize_d3(path: Path, pair_label: str) -> GateResult:
     if not path.exists():
         return GateResult("PENDING", "D3 output missing", str(path))
-    by_config: Dict[str, List[float]] = {"with_ts": [], "without_ts": []}
+    by_config: Dict[str, List[float]] = {D3_WITH_TIME_STOP: [], D3_WITHOUT_TIME_STOP: []}
     with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             if (row.get("pair") or "").strip() != pair_label:
@@ -309,10 +314,10 @@ def _summarize_d3(path: Path, pair_label: str) -> GateResult:
             cfg = str(row.get("config") or "")
             if cfg in by_config:
                 by_config[cfg].append(float(row["return_pct"]))
-    if not by_config["with_ts"] or not by_config["without_ts"]:
+    if not by_config[D3_WITH_TIME_STOP] or not by_config[D3_WITHOUT_TIME_STOP]:
         return GateResult("PENDING", "D3 missing one comparison arm", str(path))
-    mean_with = sum(by_config["with_ts"]) / len(by_config["with_ts"])
-    mean_without = sum(by_config["without_ts"]) / len(by_config["without_ts"])
+    mean_with = sum(by_config[D3_WITH_TIME_STOP]) / len(by_config[D3_WITH_TIME_STOP])
+    mean_without = sum(by_config[D3_WITHOUT_TIME_STOP]) / len(by_config[D3_WITHOUT_TIME_STOP])
     if abs(mean_with) <= 1e-9:
         return GateResult("PENDING", "D3 with_ts mean near zero", str(path))
     rel_gap = ((mean_with - mean_without) / mean_with) * 100.0
@@ -550,7 +555,13 @@ def main() -> None:
         })
 
     bucket_order = {"APPROVED": 0, "PROBATION": 1, "REJECTED": 2}
-    ranking_rows.sort(key=lambda row: (bucket_order.get(row["bucket"], 9), row["raw_p"] if row["raw_p"] != "" else 9, -float(row["mean_pct"])))
+    ranking_rows.sort(
+        key=lambda row: (
+            bucket_order.get(row["bucket"], UNKNOWN_BUCKET_SORT_ORDER),
+            row["raw_p"] if row["raw_p"] != "" else INVALID_P_SORT_ORDER,
+            -float(row["mean_pct"]),
+        )
+    )
     ranking_csv = output_dir / "ranking.csv"
     _write_csv(
         ranking_csv,

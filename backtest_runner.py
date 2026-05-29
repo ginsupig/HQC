@@ -415,13 +415,16 @@ def _normalize_bars(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return work
 
 
+_SYNTHETIC_BAR_CLOSE_OFFSET_MS = 30_000
+
+
 def _bar_to_ticks(row: pd.Series, symbol: str) -> List[Event]:
     o = float(row["open"])
     c = float(row["close"])
     v = max(1.0, float(row["volume"]) / 2.0)
     ts_ms = int(pd.Timestamp(row["timestamp"]).timestamp() * 1000)
 
-    path = [(o, ts_ms), (c, ts_ms + 30_000)]
+    path = [(o, ts_ms), (c, ts_ms + _SYNTHETIC_BAR_CLOSE_OFFSET_MS)]
     ticks: List[Event] = []
     for px, tick_ts_ms in path:
         ticks.append(

@@ -32,7 +32,7 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -62,7 +62,7 @@ class CorrectedVerdict:
 def apply_corrections(
     tests: List[TestResult],
     alpha: float = 0.05,
-    family_size: int | None = None,
+    family_size: Optional[int] = None,
 ) -> List[CorrectedVerdict]:
     """Apply Bonferroni and Benjamini-Hochberg corrections to a family.
 
@@ -122,7 +122,7 @@ def _load_family(path: Path) -> List[TestResult]:
     return out
 
 
-def _format_table(results: List[CorrectedVerdict], alpha: float, family_size: int | None = None) -> str:
+def _format_table(results: List[CorrectedVerdict], alpha: float, family_size: Optional[int] = None) -> str:
     n = family_size or len(results)
     lines = []
     header = f"{'pair':<18} {'raw_p':>8} {'Bonf_thr':>10} {'Bonf?':>6} {'BH_rank':>8} {'BH_thr':>9} {'BH?':>4}  verdict"
