@@ -417,15 +417,13 @@ def _normalize_bars(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
 def _bar_to_ticks(row: pd.Series, symbol: str) -> List[Event]:
     o = float(row["open"])
-    h = float(row["high"])
-    l = float(row["low"])
     c = float(row["close"])
-    v = max(1.0, float(row["volume"]) / 4.0)
+    v = max(1.0, float(row["volume"]) / 2.0)
     ts_ms = int(pd.Timestamp(row["timestamp"]).timestamp() * 1000)
 
-    path = [o, l, h, c] if c >= o else [o, h, l, c]
+    path = [(o, ts_ms), (c, ts_ms + 30_000)]
     ticks: List[Event] = []
-    for i, px in enumerate(path):
+    for px, tick_ts_ms in path:
         ticks.append(
             Event(
                 type=EventType.TICK,
@@ -434,7 +432,7 @@ def _bar_to_ticks(row: pd.Series, symbol: str) -> List[Event]:
                     "symbol": symbol,
                     "price": float(px),
                     "volume": float(v),
-                    "timestamp": ts_ms + (i * 15000),
+                    "timestamp": tick_ts_ms,
                 },
             )
         )

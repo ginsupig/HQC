@@ -140,6 +140,30 @@ The walk-forward output now includes:
 - aggregate `avg_test_profit_factor`
 - aggregate `total_candidates_evaluated`
 
+## Candidate Pair Research Campaign
+
+Research candidates now live in `config/pairs_research.yaml`, separate from
+`config/pairs.yaml` so the live basket cannot be expanded accidentally.
+
+Run the batch candidate workflow with:
+
+```powershell
+c:/HQC/.venv/Scripts/python.exe tools/pairs_candidate_campaign.py --config config/pairs_research.yaml
+```
+
+The campaign workflow:
+
+- locks a pre-registered family size before scoring any new pair
+- writes one audit folder per pair under the configured `output_dir`
+- runs walk-forward first, then A2/A3/A4/D3 gates
+- emits campaign-level `family.csv`, `ranking.csv`, and `campaign_summary.json`
+
+`ranking.csv` is the promotion decision table:
+
+- `APPROVED` — corrected edge survives and every gate passes
+- `PROBATION` — corrected edge survives but one or more gates are pending/attention
+- `REJECTED` — corrected edge fails or a mandatory gate fails
+
 ## Performance Reporting
 
 Generate a portfolio-style report from a backtest result:
