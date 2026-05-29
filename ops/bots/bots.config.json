@@ -1,0 +1,73 @@
+{
+  "_comment": "Bot lifecycle registry. Edit this file to add/remove bots from the universal market-close kill. Each entry: name (display), match (regex against python.exe CommandLine for kill matching), launch (PowerShell command to start the bot — optional; only used if you wire start_all_bots.ps1 to a scheduled task).",
+  "timezone": "America/Los_Angeles",
+  "market_close_local": "13:05",
+  "market_open_local": "06:25",
+  "bots": [
+    {
+      "name": "HQC",
+      "match": "C:\\\\HQC\\\\.*main_pairs\\.py",
+      "launch": "Start-Process -FilePath 'C:\\HQC\\.venv\\Scripts\\python.exe' -ArgumentList 'main_pairs.py','--config','config/pairs.yaml' -WorkingDirectory 'C:\\HQC' -WindowStyle Minimized"
+    },
+    {
+      "name": "orb_elite",
+      "match": "C:\\\\orb_elite\\\\.*main\\.py",
+      "launch": "Start-Process -FilePath 'C:\\orb_elite\\.venv\\Scripts\\python.exe' -ArgumentList 'main.py','--mode','paper' -WorkingDirectory 'C:\\orb_elite' -WindowStyle Minimized"
+    },
+    {
+      "name": "DMB",
+      "match": "C:\\\\DMB\\\\.*main\\.py",
+      "launch": "Start-Process -FilePath 'C:\\DMB\\.venv\\Scripts\\python.exe' -ArgumentList 'main.py' -WorkingDirectory 'C:\\DMB' -WindowStyle Minimized"
+    },
+    {
+      "name": "DBB",
+      "match": "C:\\\\DBB\\\\.*run\\.py",
+      "launch": "Start-Process -FilePath 'C:\\DBB\\.venv\\Scripts\\python.exe' -ArgumentList 'run.py' -WorkingDirectory 'C:\\DBB' -WindowStyle Minimized"
+    },
+    {
+      "name": "aegis",
+      "match": "C:\\\\aegis-git\\\\.*aegis\\.aegis",
+      "launch": "Start-Process -FilePath 'C:\\aegis-git\\.venv\\Scripts\\python.exe' -ArgumentList '-m','aegis.aegis' -WorkingDirectory 'C:\\aegis-git' -WindowStyle Minimized"
+    },
+    {
+      "name": "revbot",
+      "match": "C:\\\\revbot\\\\.*",
+      "launch": "Start-Process -FilePath 'C:\\revbot\\.venv\\Scripts\\python.exe' -ArgumentList 'main.py' -WorkingDirectory 'C:\\revbot' -WindowStyle Minimized"
+    },
+    {
+      "name": "omegaintel_trader",
+      "match": "OmegaIntelTrader|omegaintel",
+      "launch": null
+    },
+    {
+      "name": "MegaMind",
+      "match": "C:\\\\MegaMind\\\\.*",
+      "launch": null
+    },
+    {
+      "name": "nexus_alpha",
+      "match": "C:\\\\nexus_alpha\\\\.*",
+      "launch": null
+    },
+    {
+      "name": "regime_trader",
+      "match": "regime[_-]?trader",
+      "launch": null
+    },
+    {
+      "name": "optima_prima",
+      "match": "optima[_-]?prima",
+      "launch": null
+    },
+    {
+      "name": "orb_alpha",
+      "match": "orb[_-]?alpha",
+      "launch": null
+    },
+    {
+      "name": "coordinator",
+      "match": "coordinator\\.py",
+      "launch": null
+    }
+  ]
+}
