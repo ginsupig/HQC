@@ -1,0 +1,104 @@
+# B1 — universe + GICS-sector mapping for pair-discovery clustering.
+#
+# Each universe is a list of (ticker, sector) entries. Sector labels are
+# GICS-style ("Financials", "Information Technology", etc.) so the clustering
+# step can use them as a hard partition (no cross-sector pairs by default —
+# cross-sector cointegration is real but rare and usually overfits).
+#
+# Tickers MUST exist as <lowercase>_<days>d_1m.csv files under data/alpaca/
+# (or whatever --data-dir is passed) for B1 to score them. Missing tickers
+# are reported and skipped, not silently dropped — so the operator can decide
+# whether to fetch them or shrink the universe.
+
+deployed:
+  # Sanity-check universe: the one pair currently deployed (per A1).
+  - { ticker: JPM, sector: Financials }
+  - { ticker: BAC, sector: Financials }
+
+large_cap_financials:
+  - { ticker: JPM,  sector: Financials }
+  - { ticker: BAC,  sector: Financials }
+  - { ticker: WFC,  sector: Financials }
+  - { ticker: C,    sector: Financials }
+  - { ticker: GS,   sector: Financials }
+  - { ticker: MS,   sector: Financials }
+  - { ticker: USB,  sector: Financials }
+  - { ticker: PNC,  sector: Financials }
+  - { ticker: TFC,  sector: Financials }
+  - { ticker: SCHW, sector: Financials }
+  - { ticker: BLK,  sector: Financials }
+  - { ticker: AXP,  sector: Financials }
+
+large_cap_tech:
+  - { ticker: AAPL,  sector: Information Technology }
+  - { ticker: MSFT,  sector: Information Technology }
+  - { ticker: NVDA,  sector: Information Technology }
+  - { ticker: GOOG,  sector: Communication Services }
+  - { ticker: GOOGL, sector: Communication Services }
+  - { ticker: META,  sector: Communication Services }
+  - { ticker: AMZN,  sector: Consumer Discretionary }
+  - { ticker: AVGO,  sector: Information Technology }
+  - { ticker: ORCL,  sector: Information Technology }
+  - { ticker: ADBE,  sector: Information Technology }
+  - { ticker: CRM,   sector: Information Technology }
+  - { ticker: AMD,   sector: Information Technology }
+
+large_cap_energy:
+  - { ticker: XOM,  sector: Energy }
+  - { ticker: CVX,  sector: Energy }
+  - { ticker: COP,  sector: Energy }
+  - { ticker: EOG,  sector: Energy }
+  - { ticker: SLB,  sector: Energy }
+  - { ticker: PSX,  sector: Energy }
+  - { ticker: MPC,  sector: Energy }
+  - { ticker: VLO,  sector: Energy }
+  - { ticker: OXY,  sector: Energy }
+  - { ticker: PXD,  sector: Energy }
+
+large_cap_healthcare:
+  - { ticker: UNH,  sector: Health Care }
+  - { ticker: JNJ,  sector: Health Care }
+  - { ticker: LLY,  sector: Health Care }
+  - { ticker: PFE,  sector: Health Care }
+  - { ticker: MRK,  sector: Health Care }
+  - { ticker: ABBV, sector: Health Care }
+  - { ticker: TMO,  sector: Health Care }
+  - { ticker: ABT,  sector: Health Care }
+  - { ticker: DHR,  sector: Health Care }
+  - { ticker: BMY,  sector: Health Care }
+
+large_cap_consumer_staples:
+  - { ticker: PG,   sector: Consumer Staples }
+  - { ticker: KO,   sector: Consumer Staples }
+  - { ticker: PEP,  sector: Consumer Staples }
+  - { ticker: COST, sector: Consumer Staples }
+  - { ticker: WMT,  sector: Consumer Staples }
+  - { ticker: CL,   sector: Consumer Staples }
+  - { ticker: MDLZ, sector: Consumer Staples }
+  - { ticker: PM,   sector: Consumer Staples }
+  - { ticker: MO,   sector: Consumer Staples }
+
+sector_etfs:
+  # The sector SPDR family. Useful for ETF-vs-ETF pair tests and as a sanity
+  # benchmark — if a sector-ETF pair shows edge, individual names in that
+  # sector are more likely to as well.
+  - { ticker: XLF,  sector: ETF_Financials }
+  - { ticker: XLK,  sector: ETF_Technology }
+  - { ticker: XLE,  sector: ETF_Energy }
+  - { ticker: XLV,  sector: ETF_HealthCare }
+  - { ticker: XLI,  sector: ETF_Industrials }
+  - { ticker: XLY,  sector: ETF_ConsumerDiscretionary }
+  - { ticker: XLP,  sector: ETF_ConsumerStaples }
+  - { ticker: XLU,  sector: ETF_Utilities }
+  - { ticker: XLB,  sector: ETF_Materials }
+  - { ticker: XLRE, sector: ETF_RealEstate }
+  - { ticker: XLC,  sector: ETF_Communication }
+
+index_etfs:
+  # Broad-market index ETFs. Mostly useful as overlap/correlation references
+  # rather than as pairs (SPY vs IWM as a pair is just a beta trade).
+  - { ticker: SPY, sector: Index }
+  - { ticker: QQQ, sector: Index }
+  - { ticker: IWM, sector: Index }
+  - { ticker: DIA, sector: Index }
+  - { ticker: VTI, sector: Index }
