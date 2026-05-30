@@ -1,0 +1,83 @@
+# Candidate-pair research campaign config.
+# This file is intentionally separate from config/pairs.yaml so research
+# candidates cannot be promoted into the live basket accidentally.
+
+campaign:
+  output_dir: state/pairs_campaign
+  pre_registered_family_size: 7
+  alpha: 0.05
+  bootstrap: 10000
+  train_days: 30
+  test_days: 10
+  initial_capital: 100000
+  sim_max_hold_minutes: 240
+  slippage_bps_per_side: 1.5
+  sec_fee_rate: 0.000008
+  short_borrow_apr: 0.0025
+  pair_entry_z: 1.5
+  pair_exit_z: 0.4
+  pair_delta: 1e-4
+  pair_ve: 1e-3
+  pair_max_leg_staleness_sec: 30.0
+  pair_cooldown_seconds: 120.0
+  pair_nominal_stop_pct: 0.02
+  pair_target_dollar_notional: 10000.0
+  gates:
+    a2:
+      enabled: true
+      workers: 1
+      smoke: false
+    a3:
+      enabled: true
+      workers: 1
+    a4:
+      enabled: true
+      workers: 1
+      spy_csv: data/alpaca/spy_730d_1m.csv
+      spy_symbol: SPY
+    d3:
+      enabled: true
+      workers: 1
+
+pairs:
+  - y: JPM
+    x: BAC
+    csv_y: data/alpaca/jpm_730d_1m.csv
+    csv_x: data/alpaca/bac_730d_1m.csv
+    thesis: "Large-cap bank pair with shared rate and credit drivers."
+
+  - y: C
+    x: WFC
+    csv_y: data/alpaca/c_730d_1m.csv
+    csv_x: data/alpaca/wfc_730d_1m.csv
+    thesis: "Alternate bank pair with common macro sensitivity but distinct balance-sheet profiles."
+
+  - y: USB
+    x: PNC
+    csv_y: data/alpaca/usb_730d_1m.csv
+    csv_x: data/alpaca/pnc_730d_1m.csv
+    thesis: "Regional-bank pair to test whether the bank thesis generalizes beyond money centers."
+
+  - y: V
+    x: MA
+    csv_y: data/alpaca/v_730d_1m.csv
+    csv_x: data/alpaca/ma_730d_1m.csv
+    thesis: "Payment duopoly with structural cross-exposure and similar network economics."
+
+  - y: MSFT
+    x: AAPL
+    csv_y: data/alpaca/msft_730d_1m.csv
+    csv_x: data/alpaca/aapl_730d_1m.csv
+    thesis: "Mega-cap tech leaders with shared index flows and stable liquidity."
+
+  - y: XOM
+    x: CVX
+    csv_y: data/alpaca/xom_730d_1m.csv
+    csv_x: data/alpaca/cvx_730d_1m.csv
+    thesis: "Integrated oil majors with matched commodity sensitivity."
+
+  - y: KO
+    x: PEP
+    csv_y: data/alpaca/ko_730d_1m.csv
+    csv_x: data/alpaca/pep_730d_1m.csv
+    thesis: "Defensive staples pair for a low-volatility cross-sector candidate."

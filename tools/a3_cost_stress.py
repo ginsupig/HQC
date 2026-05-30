@@ -57,7 +57,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from backtest_runner import BacktestConfig, run_backtest  # noqa: E402
-from walkforward_pairs import _date_col, _windows  # noqa: E402
+from walkforward_pairs import _date_col, _tag_symbol, _windows  # noqa: E402
 from analyze_walkforward import _bootstrap_mean_ci, _one_sample_p_greater_than_zero  # noqa: E402
 
 
@@ -211,8 +211,8 @@ _W_ARGS: Optional[argparse.Namespace] = None
 
 def _worker_init(csv_y: str, csv_x: str, train_days: int, test_days: int, args: argparse.Namespace) -> None:
     global _W_DF_Y, _W_DF_X, _W_WINDOWS, _W_ARGS
-    _W_DF_Y = pd.read_csv(csv_y)
-    _W_DF_X = pd.read_csv(csv_x)
+    _W_DF_Y = _tag_symbol(pd.read_csv(csv_y), args.symbol_y)
+    _W_DF_X = _tag_symbol(pd.read_csv(csv_x), args.symbol_x)
     days_y = sorted(set(_date_col(_W_DF_Y).dropna().dt.normalize().tolist()))
     days_x = sorted(set(_date_col(_W_DF_X).dropna().dt.normalize().tolist()))
     days = sorted(set(days_y) & set(days_x))

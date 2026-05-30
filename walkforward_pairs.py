@@ -35,6 +35,12 @@ import pandas as pd
 from backtest_runner import BacktestConfig, run_backtest
 
 
+def _tag_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    work = df.copy()
+    work["symbol"] = symbol.upper()
+    return work
+
+
 def _date_col(df: pd.DataFrame) -> pd.Series:
     for c in ["timestamp", "datetime", "date", "time", "t"]:
         if c in df.columns:
@@ -79,6 +85,19 @@ def _build_cfg(args: argparse.Namespace) -> BacktestConfig:
     )
 
 
+def _slice_pair_window(
+    df_y: pd.DataFrame,
+    df_x: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    sy = _date_col(df_y).dt.date
+    sx = _date_col(df_x).dt.date
+    mask_y = (sy >= start.date()) & (sy <= end.date())
+    mask_x = (sx >= start.date()) & (sx <= end.date())
+    return pd.concat([df_y[mask_y], df_x[mask_x]], ignore_index=True)
+
+
 async def _run_window_slice(
     df_y: pd.DataFrame,
     df_x: pd.DataFrame,
@@ -88,18 +107,14 @@ async def _run_window_slice(
 ) -> Dict[str, object]:
     """Slice both legs to [start, end] (inclusive on calendar date) and
     hand the concatenated frame to run_backtest with strategy=pairs."""
-    sy = _date_col(df_y).dt.date
-    sx = _date_col(df_x).dt.date
-    mask_y = (sy >= start.date()) & (sy <= end.date())
-    mask_x = (sx >= start.date()) & (sx <= end.date())
-    sliced = pd.concat([df_y[mask_y], df_x[mask_x]], ignore_index=True)
+    sliced = _slice_pair_window(df_y, df_x, start, end)
     cfg = _build_cfg(args)
     return await run_backtest(sliced, cfg)
 
 
 async def _main_async(args: argparse.Namespace) -> None:
-    df_y = pd.read_csv(args.csv_y)
-    df_x = pd.read_csv(args.csv_x)
+    df_y = _tag_symbol(pd.read_csv(args.csv_y), args.symbol_y)
+    df_x = _tag_symbol(pd.read_csv(args.csv_x), args.symbol_x)
     days_y = sorted(set(_date_col(df_y).dropna().dt.normalize().tolist()))
     days_x = sorted(set(_date_col(df_x).dropna().dt.normalize().tolist()))
     days = sorted(set(days_y) & set(days_x))  # only days both legs trade
