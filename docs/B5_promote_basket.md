@@ -105,6 +105,30 @@ python tools/promote_pairs.py \
 `--ranking` overrides the default `ranking.csv` location (otherwise derived
 from the campaign config's `output_dir`).
 
+## Auto-promotion (campaign hook)
+
+The campaign runner can promote automatically at the end of a run, so a single
+command goes from candidates to an updated deploy config. Configure it in the
+campaign YAML:
+
+```yaml
+# config/pairs_research.yaml
+campaign:
+  promotion:
+    enabled: true
+    write: false            # dry-run first; flip to true to write
+    target: config/pairs.yaml
+    keep_existing: false
+    buying_power: 450000
+    max_leverage: 3
+```
+
+CLI overrides (highest priority): `--promote` (force dry-run), `--promote-write`
+(force + write), `--no-promote` (disable). Auto-promotion is skipped during a
+campaign `--dry-run` (the ranking is all-REJECTED placeholder data). It reuses
+the exact same strict-gate `promote()` core as the standalone CLI, so the
+behaviour and safety guarantees are identical.
+
 ## Flags
 
 | flag | meaning |

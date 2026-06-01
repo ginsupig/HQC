@@ -422,6 +422,139 @@ def gross_exposure_report(
 
 
 # --------------------------------------------------------------------------- #
+# Programmatic core (used by the CLI and by the campaign auto-promotion hook)
+# --------------------------------------------------------------------------- #
+@dataclass
+class PromotionResult:
+    approved: List[DeployPair]
+    final_pairs: List[DeployPair]
+    warnings: List[str]
+    existing_labels: List[str]
+    new_labels: List[str]
+    gross: float
+    gross_limit: float
+    gross_warning: Optional[str]
+    rendered: str
+    written: bool
+    refused_empty: bool
+    ranking_rows: int
+    campaign_path: Path
+    ranking_path: Path
+    target: Path
+    buying_power: float
+    max_leverage: float
+
+
+def _rel(path: Path) -> str:
+    return str(path.relative_to(_REPO_ROOT)) if path.is_relative_to(_REPO_ROOT) else str(path)
+
+
+def promote(
+    *,
+    campaign_config: Path,
+    target: Path,
+    ranking: Optional[Path] = None,
+    write: bool = False,
+    keep_existing: bool = False,
+    buying_power: Optional[float] = None,
+    max_leverage: float = 1.0,
+    allow_empty: bool = False,
+) -> PromotionResult:
+    """Resolve, gate, render (and optionally write) the deploy basket.
+
+    Pure of stdout — returns a PromotionResult the caller renders. Raises
+    FileNotFoundError for a missing campaign config / ranking, ValueError if
+    the ranking location can't be derived. ``refused_empty`` is True (and
+    nothing is written) when the basket is empty and ``allow_empty`` is False.
+    """
+    campaign_path = Path(campaign_config).resolve()
+    if not campaign_path.exists():
+        raise FileNotFoundError(f"campaign config not found: {campaign_path}")
+
+    defaults, campaign_pairs, output_dir = load_campaign_params(campaign_path)
+
+    ranking_path = ranking
+    if ranking_path is None:
+        if output_dir is None:
+            raise ValueError("ranking not given and campaign config has no output_dir.")
+        ranking_path = output_dir / "ranking.csv"
+    ranking_path = Path(ranking_path).resolve()
+    if not ranking_path.exists():
+        raise FileNotFoundError(f"ranking not found: {ranking_path}")
+
+    ranking_rows = load_ranking(ranking_path)
+    approved, warnings = select_approved(ranking_rows, defaults, campaign_pairs)
+
+    target = Path(target)
+    existing = load_existing_target(target)
+    existing_labels = _existing_labels(existing)
+
+    # Approved order preserved; kept-existing non-approved pairs appended as-is.
+    final_pairs = list(approved)
+    if keep_existing:
+        approved_labels = {dp.label for dp in approved}
+        for raw_pair in existing.get("pairs") or []:
+            try:
+                y = str(raw_pair["y"]).upper()
+                x = str(raw_pair["x"]).upper()
+            except (KeyError, TypeError):
+                continue
+            label = f"{y}/{x}"
+            if label in approved_labels:
+                continue
+            params = {
+                key: float(raw_pair.get(key, defaults.get(key, _DEFAULT_PARAMS[key])))
+                for key in _DEFAULT_PARAMS
+            }
+            final_pairs.append(
+                DeployPair(
+                    y=y, x=x, params=params, thesis="",
+                    provenance={"raw_p": "", "ci_lo": "", "ci_hi": "", "mean_pct": "",
+                                "bonferroni_threshold": "", "gates": "retained (--keep-existing)"},
+                )
+            )
+
+    resolved_bp = (
+        buying_power if buying_power is not None
+        else float((existing.get("risk") or {}).get("initial_capital", 100000.0))
+    )
+    gross, gross_limit, gross_warning = gross_exposure_report(final_pairs, resolved_bp, max_leverage)
+
+    rendered = render_yaml(
+        final_pairs, existing,
+        source_campaign=_rel(campaign_path),
+        ranking_path=_rel(ranking_path),
+    )
+
+    refused_empty = not final_pairs and not allow_empty
+    written = False
+    if write and not refused_empty:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered, encoding="utf-8")
+        written = True
+
+    return PromotionResult(
+        approved=approved,
+        final_pairs=final_pairs,
+        warnings=warnings,
+        existing_labels=existing_labels,
+        new_labels=[dp.label for dp in final_pairs],
+        gross=gross,
+        gross_limit=gross_limit,
+        gross_warning=gross_warning,
+        rendered=rendered,
+        written=written,
+        refused_empty=refused_empty,
+        ranking_rows=len(ranking_rows),
+        campaign_path=campaign_path,
+        ranking_path=ranking_path,
+        target=target,
+        buying_power=resolved_bp,
+        max_leverage=max_leverage,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 def _print_diff(new_labels: List[str], old_labels: List[str]) -> None:
@@ -464,116 +597,72 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="Permit writing a config with zero pairs (default: refuse).")
     args = p.parse_args(argv)
 
-    campaign_path = args.campaign_config.resolve()
-    if not campaign_path.exists():
-        print(f"ERROR: campaign config not found: {campaign_path}", file=sys.stderr)
-        return 2
-
-    defaults, campaign_pairs, output_dir = load_campaign_params(campaign_path)
-
-    ranking_path = args.ranking
-    if ranking_path is None:
-        if output_dir is None:
-            print("ERROR: --ranking not given and campaign config has no output_dir.", file=sys.stderr)
-            return 2
-        ranking_path = output_dir / "ranking.csv"
-    ranking_path = ranking_path.resolve()
-    if not ranking_path.exists():
-        print(
-            f"ERROR: ranking not found: {ranking_path}\n"
-            f"       Run tools/pairs_candidate_campaign.py first (it needs market "
-            f"data in data/alpaca/).",
-            file=sys.stderr,
+    try:
+        result = promote(
+            campaign_config=args.campaign_config,
+            target=args.target,
+            ranking=args.ranking,
+            write=args.write,
+            keep_existing=args.keep_existing,
+            buying_power=args.buying_power,
+            max_leverage=args.max_leverage,
+            allow_empty=args.allow_empty,
         )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        if isinstance(exc, FileNotFoundError) and "ranking" in str(exc):
+            print(
+                "       Run tools/pairs_candidate_campaign.py first "
+                "(it needs market data in data/alpaca/).",
+                file=sys.stderr,
+            )
         return 2
 
-    ranking = load_ranking(ranking_path)
-    approved, warnings = select_approved(ranking, defaults, campaign_pairs)
-
-    existing = load_existing_target(args.target)
-    existing_labels = _existing_labels(existing)
-
-    # Build final basket. Approved order is preserved; kept-existing pairs that
-    # aren't approved are appended (with their existing params, preserved as-is).
-    final_pairs = list(approved)
-    if args.keep_existing:
-        approved_labels = {dp.label for dp in approved}
-        for raw_pair in existing.get("pairs") or []:
-            try:
-                y = str(raw_pair["y"]).upper()
-                x = str(raw_pair["x"]).upper()
-            except (KeyError, TypeError):
-                continue
-            label = f"{y}/{x}"
-            if label in approved_labels:
-                continue
-            params = {
-                key: float(raw_pair.get(key, defaults.get(key, _DEFAULT_PARAMS[key])))
-                for key in _DEFAULT_PARAMS
-            }
-            final_pairs.append(
-                DeployPair(
-                    y=y, x=x, params=params, thesis="",
-                    provenance={"raw_p": "", "ci_lo": "", "ci_hi": "", "mean_pct": "",
-                                "bonferroni_threshold": "", "gates": "retained (--keep-existing)"},
-                )
-            )
-
-    new_labels = [dp.label for dp in final_pairs]
-
-    print(f"Campaign : {campaign_path}")
-    print(f"Ranking  : {ranking_path}  ({len(ranking)} rows)")
-    print(f"Target   : {args.target}")
-    print(f"Approved : {len(approved)}  |  final basket: {len(final_pairs)}")
-    print()
-    for w in warnings:
-        print(f"  WARN: {w}")
-    if warnings:
-        print()
-
-    _print_diff(new_labels, existing_labels)
-    print()
-
-    buying_power = (
-        args.buying_power
-        if args.buying_power is not None
-        else float((existing.get("risk") or {}).get("initial_capital", 100000.0))
-    )
-    gross, limit, gross_warning = gross_exposure_report(final_pairs, buying_power, args.max_leverage)
-    print(
-        f"Gross notional (2 legs/pair): ${gross:,.0f}  vs allowed ${limit:,.0f} "
-        f"(buying_power ${buying_power:,.0f} x {args.max_leverage:g}x)"
-    )
-    if gross_warning:
-        print(f"  WARN: {gross_warning}")
-    print()
-
-    if not final_pairs and not args.allow_empty:
+    print_promotion_result(result, write=args.write)
+    if result.refused_empty:
         print(
             "REFUSING to write a zero-pair basket. No pairs passed the strict gate.\n"
             "  Pass --allow-empty to override (this disables all pair trading).",
             file=sys.stderr,
         )
         return 1
-
-    rendered = render_yaml(
-        final_pairs, existing,
-        source_campaign=str(campaign_path.relative_to(_REPO_ROOT)) if campaign_path.is_relative_to(_REPO_ROOT) else str(campaign_path),
-        ranking_path=str(ranking_path.relative_to(_REPO_ROOT)) if ranking_path.is_relative_to(_REPO_ROOT) else str(ranking_path),
-    )
-
-    print("=" * 70)
-    print(f"{'WOULD WRITE' if not args.write else 'WRITING'} {args.target}:")
-    print("=" * 70)
-    print(rendered)
-
-    if args.write:
-        args.target.parent.mkdir(parents=True, exist_ok=True)
-        args.target.write_text(rendered, encoding="utf-8")
-        print(f"Wrote {args.target} ({len(final_pairs)} pair(s)).")
-    else:
-        print("Dry-run: nothing written. Re-run with --write to apply.")
     return 0
+
+
+def print_promotion_result(result: PromotionResult, *, write: bool, show_yaml: bool = True) -> None:
+    """Render a PromotionResult to stdout (shared by the CLI and campaign hook)."""
+    print(f"Campaign : {result.campaign_path}")
+    print(f"Ranking  : {result.ranking_path}  ({result.ranking_rows} rows)")
+    print(f"Target   : {result.target}")
+    print(f"Approved : {len(result.approved)}  |  final basket: {len(result.final_pairs)}")
+    print()
+    for w in result.warnings:
+        print(f"  WARN: {w}")
+    if result.warnings:
+        print()
+
+    _print_diff(result.new_labels, result.existing_labels)
+    print()
+
+    print(
+        f"Gross notional (2 legs/pair): ${result.gross:,.0f}  vs allowed "
+        f"${result.gross_limit:,.0f} (buying_power ${result.buying_power:,.0f} "
+        f"x {result.max_leverage:g}x)"
+    )
+    if result.gross_warning:
+        print(f"  WARN: {result.gross_warning}")
+    print()
+
+    if show_yaml:
+        print("=" * 70)
+        print(f"{'WROTE' if result.written else ('WOULD WRITE' if not write else 'NOT WRITTEN')} {result.target}:")
+        print("=" * 70)
+        print(result.rendered)
+
+    if result.written:
+        print(f"Wrote {result.target} ({len(result.final_pairs)} pair(s)).")
+    elif not result.refused_empty:
+        print("Dry-run: nothing written. Re-run with --write to apply.")
 
 
 if __name__ == "__main__":

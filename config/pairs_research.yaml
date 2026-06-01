@@ -22,6 +22,19 @@ campaign:
   pair_cooldown_seconds: 120.0
   pair_nominal_stop_pct: 0.02
   pair_target_dollar_notional: 10000.0
+  # Auto-promotion of APPROVED pairs into the deploy config after the campaign.
+  # Off by default; dry-run (write: false) when first enabled so a human sees the
+  # diff before it touches config/pairs.yaml. CLI overrides: --promote (dry-run),
+  # --promote-write (write), --no-promote.
+  promotion:
+    enabled: false
+    write: false
+    target: config/pairs.yaml
+    keep_existing: false
+    buying_power: 450000      # account buying power for the gross-exposure guard
+    max_leverage: 3           # comfortable at 2-3x per the operator
+    allow_empty: false
+
   gates:
     a2:
       enabled: true

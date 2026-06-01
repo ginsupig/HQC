@@ -59,3 +59,18 @@ risk:
   daily_loss_pct_kill: 0.02       # Halt today if cumulative -2% drawdown.
   beta_drift_pct_kill: 0.30       # Halt a pair if Kalman beta drifts >30% from rolling mean.
   beta_drift_window_min: 60       # Rolling window for the baseline.
+
+# Portfolio-level sizing + exposure caps for a MULTI-pair basket. Off by
+# default — with one pair it does nothing. When enabled, the BasketAllocator
+# scales each pair's per-leg notional DOWN to fit equity x max_gross_leverage
+# and caps per-symbol exposure (a hard pre-trade guarantee, since each pair
+# trades a fixed notional); the PortfolioRiskMonitor enforces the caps and a
+# real daily-PnL kill at runtime. The per-pair target_dollar_notional above is
+# treated as the validated ceiling — allocation never sizes ABOVE it.
+#
+# portfolio:
+#   enabled: true
+#   equity: 450000          # account buying power (<=0 -> use risk.initial_capital)
+#   max_gross_leverage: 3   # comfortable at 2-3x
+#   max_symbol_pct: 0.5     # cap any single symbol at 50% of equity
+#   min_notional: 100       # warn if a pair is sized below this

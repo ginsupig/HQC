@@ -293,9 +293,32 @@ python tools/promote_pairs.py --campaign-config config/pairs_research.yaml --tar
     --write --buying-power 450000 --max-leverage 3
 ```
 
+Promotion can also run **automatically** at the end of a campaign — set
+`campaign.promotion.enabled` in `config/pairs_research.yaml` (dry-run by
+default), or pass `--promote` / `--promote-write` to the campaign runner.
+
 > Promotion is gated on a campaign run, which needs 1-minute data in
 > `data/alpaca/` (git-ignored). Until the campaign produces APPROVED pairs
 > beyond JPM/BAC, the basket stays as A1 left it.
+
+### Portfolio risk for a multi-pair basket
+
+Once the basket holds more than one pair, `risk/portfolio/` (enabled via a
+`portfolio:` block in `config/pairs.yaml`) handles the exposure problems a
+single pair never had — see `docs/C1_portfolio_risk.md`:
+
+- **BasketAllocator** scales each pair's per-leg notional **down** to fit
+  `equity × max_gross_leverage` and caps per-symbol exposure. Because each pair
+  trades a fixed notional, the shared-symbol cap is a *static pre-trade
+  guarantee* (if JPM is in two pairs, their combined JPM notional is bounded),
+  not an after-the-fact halt. It never sizes above the validated
+  `target_dollar_notional`.
+- **PortfolioRiskMonitor** adds a *real* daily-PnL kill (backed by a signed
+  average-cost `PnLLedger`, replacing the old stub) plus per-symbol and gross
+  exposure kills, complementing the per-pair beta-drift kill.
+
+Off by default → a one-pair deployment is unchanged (now with a real daily-PnL
+kill instead of a stub).
 
 ## Risk controls
 
@@ -309,7 +332,8 @@ python tools/promote_pairs.py --campaign-config config/pairs_research.yaml --tar
 ### Runtime (in `PairsRiskMonitor`)
 
 - **Beta-drift kill switch** — halts a pair if its Kalman β drifts more than `beta_drift_pct_kill` (default 30%) from the rolling `beta_drift_window_min` baseline (default 60 minutes). This is the *primary* live safeguard, because cointegration breakdown is the actual failure mode for stat-arb. When β goes off the rails, the spread is no longer mean-reverting; better to halt and reassess than keep trading a broken model.
-- **Daily PnL kill** — stubbed pending a tighter PnL feed. Beta-drift is more diagnostic; daily PnL kill is a convenience.
+- **Daily PnL kill** — *now real* (`risk/portfolio/PortfolioRiskMonitor` + `PnLLedger`). A signed average-cost ledger tracks realized PnL from `ORDER_FILL` events and halts the basket when the day's realized PnL falls below `-daily_loss_pct_kill × equity`. Runs even with portfolio sizing off.
+- **Per-symbol & gross exposure kills** — when `portfolio.enabled`, halt if any symbol's net exposure exceeds `max_symbol_pct × equity` or total gross exceeds `max_gross_leverage × equity`. These catch drift the static allocator can't (partial fills, missed exits).
 
 ### Live-trading gate
 
@@ -347,6 +371,10 @@ HQC/
 │       └── ml_candidate_gate.py         ← LogReg veto (no lift demonstrated)
 ├── risk/
 │   ├── position_sizing/confidence_scaler.py   ← DynamicRiskSizer (rules-path)
+│   ├── portfolio/                             ← multi-pair basket risk
+│   │   ├── allocator.py                       ← per-pair sizing + shared-symbol cap
+│   │   ├── pnl_ledger.py                      ← signed avg-cost realized PnL
+│   │   └── portfolio_risk_monitor.py          ← daily-PnL / exposure kill switches
 │   └── virtual_monitor/equity_slope_detector.py
 ├── backtest_runner.py                   ← single-shot backtest + cost model + sim-exit
 ├── portfolio_batch_runner.py            ← multi-symbol batch backtest
@@ -382,7 +410,8 @@ HQC/
 | Leg-sizing verified (no qty residuals) | ✓ |
 | Realistic cost model (slippage + SEC fee + borrow) | ✓ |
 | Beta-drift kill switch | ✓ |
-| Daily PnL kill switch | ◐ stubbed |
+| Daily PnL kill switch | ✓ real (PnLLedger-backed) |
+| Portfolio sizing + per-symbol/gross exposure caps | ✓ (opt-in `portfolio:` block) |
 | TickResampler — live cadence = backtest cadence | ✓ byte-parity verified |
 | 30 days paper trading with corrected feed | ← *next* |
 | Live capital | only after the above |
