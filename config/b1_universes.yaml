@@ -78,6 +78,60 @@ large_cap_consumer_staples:
   - { ticker: PM,   sector: Consumer Staples }
   - { ticker: MO,   sector: Consumer Staples }
 
+large_cap_industrials:
+  - { ticker: CAT,  sector: Industrials }
+  - { ticker: DE,   sector: Industrials }
+  - { ticker: HON,  sector: Industrials }
+  - { ticker: GE,   sector: Industrials }
+  - { ticker: MMM,  sector: Industrials }
+  - { ticker: BA,   sector: Industrials }
+  - { ticker: LMT,  sector: Industrials }
+  - { ticker: RTX,  sector: Industrials }
+  - { ticker: NOC,  sector: Industrials }
+  - { ticker: GD,   sector: Industrials }
+  - { ticker: UPS,  sector: Industrials }
+  - { ticker: FDX,  sector: Industrials }
+
+large_cap_utilities:
+  - { ticker: NEE,  sector: Utilities }
+  - { ticker: DUK,  sector: Utilities }
+  - { ticker: SO,   sector: Utilities }
+  - { ticker: D,    sector: Utilities }
+  - { ticker: AEP,  sector: Utilities }
+  - { ticker: EXC,  sector: Utilities }
+  - { ticker: XEL,  sector: Utilities }
+  - { ticker: ED,   sector: Utilities }
+  - { ticker: WEC,  sector: Utilities }
+  - { ticker: PEG,  sector: Utilities }
+
+semiconductors:
+  # Within the IT GICS sector but a tighter, more cointegration-prone cluster
+  # than broad tech. Carved out so B1 searches semis against semis, not against
+  # software/hardware names that share little fundamental driver.
+  - { ticker: NVDA, sector: Semiconductors }
+  - { ticker: AMD,  sector: Semiconductors }
+  - { ticker: INTC, sector: Semiconductors }
+  - { ticker: AVGO, sector: Semiconductors }
+  - { ticker: QCOM, sector: Semiconductors }
+  - { ticker: TXN,  sector: Semiconductors }
+  - { ticker: MU,   sector: Semiconductors }
+  - { ticker: AMAT, sector: Semiconductors }
+  - { ticker: LRCX, sector: Semiconductors }
+  - { ticker: KLAC, sector: Semiconductors }
+  - { ticker: ADI,  sector: Semiconductors }
+  - { ticker: MRVL, sector: Semiconductors }
+
+large_cap_communication:
+  - { ticker: GOOG,  sector: Communication Services }
+  - { ticker: GOOGL, sector: Communication Services }
+  - { ticker: META,  sector: Communication Services }
+  - { ticker: NFLX,  sector: Communication Services }
+  - { ticker: DIS,   sector: Communication Services }
+  - { ticker: CMCSA, sector: Communication Services }
+  - { ticker: T,     sector: Communication Services }
+  - { ticker: VZ,    sector: Communication Services }
+  - { ticker: TMUS,  sector: Communication Services }
+
 sector_etfs:
   # The sector SPDR family. Useful for ETF-vs-ETF pair tests and as a sanity
   # benchmark — if a sector-ETF pair shows edge, individual names in that
