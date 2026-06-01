@@ -265,6 +265,38 @@ You should get `JPM/BAC EDGE+ p=0.007`, `GOOG/GOOGL EDGE+ p=0.031`, and pooled-r
 
 ---
 
+## Growing the basket (selection → deploy)
+
+Trading more than one pair is mechanically supported — `main_pairs.py` already
+instantiates one trader per pair in `config/pairs.yaml`. The bottleneck is
+*selection*: which pairs have earned a place. The pipeline that grows the basket
+without lowering the bar is:
+
+```
+B1 correlation  →  B2 cointegration  →  B3 walk-forward  →  B4 pre-register  →  A1 corrected verdict  →  B5 promote
+config/b1_universes.yaml             tools/pairs_candidate_campaign.py → ranking.csv      tools/promote_pairs.py → config/pairs.yaml
+```
+
+`tools/promote_pairs.py` is the **selection → deploy bridge**: it reads the
+campaign's `ranking.csv` and writes only the strictly-APPROVED pairs into
+`config/pairs.yaml`, re-verifying the gate (Bonferroni pass, bootstrap CI lower
+bound > 0, A2/A3/A4/D3 all PASS) rather than trusting the bucket label. It is
+**dry-run by default**, never flips `paper → live`, preserves the `risk` block,
+and stamps each promoted pair with provenance comments. A gross-exposure guard
+(`--buying-power` × `--max-leverage`) warns if the basket's notional exceeds the
+account's margin. See `docs/B5_promote_basket.md`.
+
+```bash
+# Dry-run (writes nothing); then apply with --write
+python tools/promote_pairs.py --campaign-config config/pairs_research.yaml --target config/pairs.yaml
+python tools/promote_pairs.py --campaign-config config/pairs_research.yaml --target config/pairs.yaml \
+    --write --buying-power 450000 --max-leverage 3
+```
+
+> Promotion is gated on a campaign run, which needs 1-minute data in
+> `data/alpaca/` (git-ignored). Until the campaign produces APPROVED pairs
+> beyond JPM/BAC, the basket stays as A1 left it.
+
 ## Risk controls
 
 ### Pre-trade (in strategy)
@@ -322,7 +354,13 @@ HQC/
 ├── walkforward_basket.py                ← multi-symbol walk-forward
 ├── walkforward_pairs.py                 ← pair-aware walk-forward
 ├── analyze_walkforward.py               ← bootstrap CI + Newey-West p-values
-└── tests/                               ← 20 unit tests (all passing)
+├── tools/
+│   ├── b1_universe_clustering.py        ← B1: within-sector correlation candidates
+│   ├── b2_candidate_screen.py           ← B2: cointegration + half-life screen
+│   ├── b3_batch_walkforward.py          ← B3: batch walk-forward across survivors
+│   ├── pairs_candidate_campaign.py      ← campaign runner → ranking.csv (A1/A2/A3/A4/D3)
+│   └── promote_pairs.py                 ← B5: promote APPROVED pairs → config/pairs.yaml
+└── tests/                               ← unit tests (all passing)
 ```
 
 ---
