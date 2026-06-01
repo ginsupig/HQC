@@ -277,6 +277,18 @@ B1 correlation  →  B2 cointegration  →  B3 walk-forward  →  B4 pre-registe
 config/b1_universes.yaml             tools/pairs_candidate_campaign.py → ranking.csv      tools/promote_pairs.py → config/pairs.yaml
 ```
 
+**One-shot discovery** across every sector universe: `tools/research_all.py`
+fetches data and runs B1 → B2 → B3 for each universe in
+`config/b1_universes.yaml`, then writes a single ranked `survivors.csv` so you
+can see the strongest candidates across all sectors at once. Its ranking is
+*diagnostic only* — feed the strong survivors into `config/pairs_research.yaml`
+and let the campaign + A1 be the deploy gate.
+
+```bash
+python tools/research_all.py                                   # all universes, fetch 730d, B1→B2→B3
+python tools/research_all.py --universes semiconductors --skip-fetch   # one universe, reuse data
+```
+
 `tools/promote_pairs.py` is the **selection → deploy bridge**: it reads the
 campaign's `ranking.csv` and writes only the strictly-APPROVED pairs into
 `config/pairs.yaml`, re-verifying the gate (Bonferroni pass, bootstrap CI lower
