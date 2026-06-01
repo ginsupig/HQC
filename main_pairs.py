@@ -65,6 +65,8 @@ from core.execution.slippage_controller import SlippageController
 from core.feedback.unified_logger import UnifiedFeedbackLogger
 from data.feeds.tick_resampler import TickResampler
 from data.feeds.ws_manager import AlpacaWebsocketManager
+from risk.portfolio.allocator import PairSpec, allocate
+from risk.portfolio.portfolio_risk_monitor import PortfolioRiskMonitor
 from strategies.mean_reversion.kalman_spread import USEquityKalmanPairsTrader
 
 logging.basicConfig(
@@ -96,9 +98,25 @@ class RiskConfig:
 
 
 @dataclass
+class PortfolioConfig:
+    """Portfolio-level sizing + exposure caps for a multi-pair basket.
+
+    Off by default so a single-pair deployment behaves exactly as before. When
+    enabled, the BasketAllocator scales each pair's per-leg notional to fit
+    ``equity * max_gross_leverage`` and caps per-symbol exposure, and the
+    PortfolioRiskMonitor enforces the per-symbol / gross caps at runtime."""
+    enabled: bool = False
+    equity: float = 0.0  # <= 0 -> default to risk.initial_capital
+    max_gross_leverage: float = 1.0
+    max_symbol_pct: float = 1.0
+    min_notional: float = 100.0
+
+
+@dataclass
 class PairsConfig:
     pairs: List[PairConfig] = field(default_factory=list)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     feed: str = "iex"
     paper: bool = True
 
@@ -245,9 +263,18 @@ def _load_config(path: Path) -> PairsConfig:
         beta_drift_pct_kill=float(risk_raw.get("beta_drift_pct_kill", 0.30)),
         beta_drift_window_min=int(risk_raw.get("beta_drift_window_min", 60)),
     )
+    portfolio_raw = raw.get("portfolio") or {}
+    portfolio = PortfolioConfig(
+        enabled=bool(portfolio_raw.get("enabled", False)),
+        equity=float(portfolio_raw.get("equity", 0.0)),
+        max_gross_leverage=float(portfolio_raw.get("max_gross_leverage", 1.0)),
+        max_symbol_pct=float(portfolio_raw.get("max_symbol_pct", 1.0)),
+        min_notional=float(portfolio_raw.get("min_notional", 100.0)),
+    )
     return PairsConfig(
         pairs=pairs,
         risk=risk,
+        portfolio=portfolio,
         feed=str(raw.get("feed", "iex")),
         paper=bool(raw.get("paper", True)),
     )
@@ -293,6 +320,31 @@ async def _run(config_path: Path) -> None:
 
     eod = EODLiquidationManager(bus=bus)
 
+    # Portfolio allocation: when enabled, scale each pair's per-leg notional to
+    # fit the account (equity x max_gross_leverage) and cap per-symbol exposure.
+    # The config target_dollar_notional is the validated ceiling — allocation
+    # only ever scales DOWN from it, never up. Disabled -> use config notionals.
+    portfolio_equity = cfg.portfolio.equity if cfg.portfolio.equity > 0 else cfg.risk.initial_capital
+    allocated_notional: Dict[str, float] = {f"{p.y}/{p.x}": p.target_dollar_notional for p in cfg.pairs}
+    if cfg.portfolio.enabled:
+        alloc = allocate(
+            [PairSpec(y=p.y, x=p.x, ceiling_notional=p.target_dollar_notional) for p in cfg.pairs],
+            equity=portfolio_equity,
+            max_gross_leverage=cfg.portfolio.max_gross_leverage,
+            max_symbol_pct=cfg.portfolio.max_symbol_pct,
+            min_notional=cfg.portfolio.min_notional,
+        )
+        allocated_notional = alloc.notionals
+        logger.info(
+            "Portfolio allocation (equity=$%s x %sx gross, per-symbol<=%s%%):\n%s",
+            f"{portfolio_equity:,.0f}",
+            f"{cfg.portfolio.max_gross_leverage:g}",
+            f"{cfg.portfolio.max_symbol_pct * 100:.0f}",
+            alloc.as_table(),
+        )
+        for w in alloc.warnings:
+            logger.warning("[allocator] %s", w)
+
     traders: Dict[str, USEquityKalmanPairsTrader] = {}
     symbols: set[str] = set()
     for p in cfg.pairs:
@@ -307,7 +359,7 @@ async def _run(config_path: Path) -> None:
             exit_z=p.exit_z,
             cooldown_seconds=p.cooldown_seconds,
             nominal_stop_pct=p.nominal_stop_pct,
-            target_dollar_notional=p.target_dollar_notional,
+            target_dollar_notional=allocated_notional.get(label, p.target_dollar_notional),
             # Consume bar-cadence ticks from TickResampler, NOT raw trades.
             # This is what makes the live filter behave like the backtest
             # the strategy was validated on.
@@ -322,6 +374,18 @@ async def _run(config_path: Path) -> None:
     resampler = TickResampler(bus=bus, symbols=sorted(symbols), bar_seconds=60, ticks_per_bar=4)
 
     risk_monitor = PairsRiskMonitor(bus=bus, traders=traders, risk=cfg.risk)
+
+    # Portfolio-level kill switches (real daily-PnL kill + exposure caps),
+    # complementing PairsRiskMonitor's per-pair beta-drift kill. The per-symbol
+    # and gross caps are active only when portfolio sizing is enabled; the
+    # daily-PnL kill always runs.
+    portfolio_monitor = PortfolioRiskMonitor(
+        bus=bus,
+        equity=portfolio_equity,
+        daily_loss_pct_kill=cfg.risk.daily_loss_pct_kill,
+        max_symbol_pct=cfg.portfolio.max_symbol_pct if cfg.portfolio.enabled else None,
+        max_gross_leverage=cfg.portfolio.max_gross_leverage if cfg.portfolio.enabled else None,
+    )
 
     feed = AlpacaWebsocketManager(
         api_key=api_key,
