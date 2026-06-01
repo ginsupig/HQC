@@ -30,6 +30,7 @@ import a2_analyze  # noqa: E402
 import a3_analyze  # noqa: E402
 import analyze_walkforward  # noqa: E402
 import multiple_comparisons  # noqa: E402
+import promote_pairs  # noqa: E402  (stdlib + yaml only; safe to import here)
 
 D3_WITH_TIME_STOP = "with_ts"
 D3_WITHOUT_TIME_STOP = "without_ts"
@@ -71,6 +72,19 @@ class CandidatePair:
 
 
 @dataclass
+class PromotionConfig:
+    """Optional auto-promotion of APPROVED pairs into the deploy config after a
+    campaign run. Off by default; dry-run by default when on."""
+    enabled: bool = False
+    write: bool = False
+    target: str = "config/pairs.yaml"
+    keep_existing: bool = False
+    buying_power: Optional[float] = None
+    max_leverage: float = 1.0
+    allow_empty: bool = False
+
+
+@dataclass
 class CampaignConfig:
     output_dir: str
     pre_registered_family_size: int
@@ -92,6 +106,7 @@ class CampaignConfig:
     pair_nominal_stop_pct: float = 0.02
     pair_target_dollar_notional: float = 10000.0
     gates: Dict[str, GateConfig] = field(default_factory=dict)
+    promotion: PromotionConfig = field(default_factory=PromotionConfig)
     pairs: List[CandidatePair] = field(default_factory=list)
 
 
@@ -116,6 +131,16 @@ def load_campaign(path: Path) -> CampaignConfig:
         )
         for name, cfg in gates_raw.items()
     }
+    promotion_raw = campaign_raw.get("promotion") or {}
+    promotion = PromotionConfig(
+        enabled=bool(promotion_raw.get("enabled", False)),
+        write=bool(promotion_raw.get("write", False)),
+        target=str(promotion_raw.get("target", "config/pairs.yaml")),
+        keep_existing=bool(promotion_raw.get("keep_existing", False)),
+        buying_power=(float(promotion_raw["buying_power"]) if promotion_raw.get("buying_power") is not None else None),
+        max_leverage=float(promotion_raw.get("max_leverage", 1.0)),
+        allow_empty=bool(promotion_raw.get("allow_empty", False)),
+    )
     pairs = [
         CandidatePair(
             y=str(p["y"]).upper(),
@@ -154,6 +179,7 @@ def load_campaign(path: Path) -> CampaignConfig:
         pair_nominal_stop_pct=float(campaign_raw.get("pair_nominal_stop_pct", 0.02)),
         pair_target_dollar_notional=float(campaign_raw.get("pair_target_dollar_notional", 10000.0)),
         gates=gates,
+        promotion=promotion,
         pairs=pairs,
     )
     if cfg.pre_registered_family_size < len(cfg.pairs):
@@ -342,6 +368,13 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-pairs", type=int, default=0)
+    parser.add_argument("--promote", action="store_true",
+                        help="Force auto-promotion (dry-run) after the campaign, "
+                             "overriding the config's promotion.enabled.")
+    parser.add_argument("--promote-write", action="store_true",
+                        help="Force auto-promotion AND write the deploy config.")
+    parser.add_argument("--no-promote", action="store_true",
+                        help="Disable auto-promotion even if the config enables it.")
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -593,6 +626,60 @@ def main() -> None:
             f"{row['a2']:>10} {row['a3']:>10} {row['a4']:>10} {row['d3']:>10}"
         )
     print(f"\nArtifacts: {output_dir}")
+
+    _maybe_auto_promote(args, config, config_path, ranking_csv)
+
+
+def _maybe_auto_promote(
+    args: argparse.Namespace,
+    config: CampaignConfig,
+    config_path: Path,
+    ranking_csv: Path,
+) -> None:
+    """Run the selection->deploy promoter after the campaign, if enabled.
+
+    Resolution order: --no-promote wins (off); else --promote-write / --promote
+    force it on; else the config's promotion block decides. Skipped during
+    --dry-run (the ranking is all-REJECTED placeholder data)."""
+    promo = config.promotion
+    enabled = promo.enabled
+    write = promo.write
+    if args.no_promote:
+        enabled = False
+    if args.promote:
+        enabled, write = True, write
+    if args.promote_write:
+        enabled, write = True, True
+    if not enabled:
+        return
+    if args.dry_run:
+        print("\n[promote] skipped: campaign --dry-run produced placeholder ranking.")
+        return
+
+    target = promo.target
+    target_path = Path(target)
+    if not target_path.is_absolute():
+        target_path = _REPO_ROOT / target_path
+
+    print("\n" + "=" * 70)
+    print(f"[promote] auto-promotion ({'WRITE' if write else 'dry-run'})")
+    print("=" * 70)
+    try:
+        result = promote_pairs.promote(
+            campaign_config=config_path,
+            target=target_path,
+            ranking=ranking_csv,
+            write=write,
+            keep_existing=promo.keep_existing,
+            buying_power=promo.buying_power,
+            max_leverage=promo.max_leverage,
+            allow_empty=promo.allow_empty,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[promote] ERROR: {exc}")
+        return
+    # Print the summary but not the full YAML body (campaign output is already long).
+    promote_pairs.print_promotion_result(result, write=write, show_yaml=False)
 
 
 if __name__ == "__main__":
