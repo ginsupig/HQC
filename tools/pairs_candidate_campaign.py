@@ -203,21 +203,44 @@ def _pair_value(pair: CandidatePair, attr: str, default: float) -> float:
     return float(default if value is None else value)
 
 
-def _run_command(cmd: List[str], log_path: Path, dry_run: bool) -> None:
+import time as _time
+
+# Set by main() from --stream / --quiet-subprocess. When True, sub-step output
+# (walk-forward, A2/A3/A4/D3) is streamed live to the console AND teed to the
+# log; when False it is captured to the log only (the old silent behaviour).
+STREAM_OUTPUT = True
+
+
+def _run_command(cmd: List[str], log_path: Path, dry_run: bool, label: str = "") -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if dry_run:
         log_path.write_text("DRY RUN:\n" + " ".join(cmd) + "\n", encoding="utf-8")
         return
-    proc = subprocess.run(
-        cmd,
-        cwd=_REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    log_path.write_text(proc.stdout + ("\n[stderr]\n" + proc.stderr if proc.stderr else ""), encoding="utf-8")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
+    tag = label or Path(cmd[1]).stem if len(cmd) > 1 else "step"
+    print(f"    -> {tag}  (log: {log_path})", flush=True)
+    t0 = _time.time()
+
+    if STREAM_OUTPUT:
+        # Stream stdout+stderr live and tee to the log so the run is observable.
+        with open(log_path, "w", encoding="utf-8") as logf:
+            proc = subprocess.Popen(
+                cmd, cwd=_REPO_ROOT, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(f"      | {line}", end="", flush=True)
+                logf.write(line)
+            returncode = proc.wait()
+    else:
+        proc = subprocess.run(cmd, cwd=_REPO_ROOT, text=True, capture_output=True, check=False)
+        log_path.write_text(proc.stdout + ("\n[stderr]\n" + proc.stderr if proc.stderr else ""), encoding="utf-8")
+        returncode = proc.returncode
+
+    elapsed = _time.time() - t0
+    print(f"       {tag} done in {elapsed:.0f}s (rc={returncode})", flush=True)
+    if returncode != 0:
+        raise RuntimeError(f"Command failed ({returncode}): {' '.join(cmd)}")
 
 
 def summarize_walkforward_payload(payload: dict, bootstrap: int, alpha: float) -> dict:
@@ -375,19 +398,52 @@ def main() -> None:
                         help="Force auto-promotion AND write the deploy config.")
     parser.add_argument("--no-promote", action="store_true",
                         help="Disable auto-promotion even if the config enables it.")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Override ALL gate workers at once (e.g. your CPU count). "
+                             "The A2/A3/A4/D3 sweeps are the slow part — parallelise them.")
+    parser.add_argument("--screen", action="store_true",
+                        help="Fast triage: run only the per-pair walk-forward and skip the "
+                             "A2/A3/A4/D3 gates. Pairs land in PROBATION at best (no gate "
+                             "evidence) — use it to see which pairs have raw edge before "
+                             "paying for full validation.")
+    parser.add_argument("--quiet-subprocess", action="store_true",
+                        help="Capture sub-step output to logs only (old silent behaviour). "
+                             "Default streams it live so the run is observable.")
     args = parser.parse_args()
+
+    global STREAM_OUTPUT
+    STREAM_OUTPUT = not args.quiet_subprocess
 
     config_path = args.config.resolve()
     config = load_campaign(config_path)
+
+    # --workers overrides every gate's worker count; --screen disables the gates.
+    if args.workers is not None:
+        for gate in config.gates.values():
+            gate.workers = max(1, args.workers)
+    if args.screen:
+        for gate in config.gates.values():
+            gate.enabled = False
+        print("[screen] fast mode: gates disabled, running walk-forward only.")
+
     base_dir = _REPO_ROOT
     output_dir = _resolve_path(config.output_dir, base_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pairs = config.pairs[: args.max_pairs] if args.max_pairs else config.pairs
+    total = len(pairs)
+    print(
+        f"Campaign: {total} pair(s), gates="
+        f"{'OFF (screen)' if args.screen else ','.join(n for n, g in config.gates.items() if g.enabled) or 'none'}"
+        f", workers={args.workers or 'config'}, output={output_dir}"
+    )
     family_rows: List[dict] = []
     pair_summaries: List[dict] = []
 
-    for pair in pairs:
+    campaign_t0 = _time.time()
+    for idx, pair in enumerate(pairs, 1):
+        print(f"\n[{idx}/{total}] {pair.label}  ({_time.strftime('%H:%M:%S')})", flush=True)
+        pair_t0 = _time.time()
         pair_dir = output_dir / pair.slug
         pair_dir.mkdir(parents=True, exist_ok=True)
         csv_y = _resolve_path(pair.csv_y, base_dir)
@@ -543,7 +599,15 @@ def main() -> None:
         }
         (pair_dir / "summary.json").write_text(json.dumps(pair_summary, indent=2), encoding="utf-8")
         pair_summaries.append(pair_summary)
+        gate_tags = " ".join(f"{n}={g.status}" for n, g in gates.items()) or "(no gates)"
+        print(
+            f"[{idx}/{total}] {pair.label} done in {_time.time() - pair_t0:.0f}s  "
+            f"raw_p={'' if not math.isfinite(stats['raw_p']) else round(stats['raw_p'], 4)}  "
+            f"mean={stats['mean_pct']:+.3f}%  {gate_tags}",
+            flush=True,
+        )
 
+    print(f"\nAll {total} pair(s) processed in {_time.time() - campaign_t0:.0f}s.", flush=True)
     family_csv = output_dir / "family.csv"
     _write_csv(family_csv, family_rows, ["pair", "raw_p"])
 
