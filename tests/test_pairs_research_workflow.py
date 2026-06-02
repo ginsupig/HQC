@@ -1,5 +1,9 @@
+import io
 import math
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -72,6 +76,55 @@ class TestPairsResearchWorkflow(unittest.TestCase):
         self.assertEqual(summary["windows"], 3)
         self.assertGreater(summary["ci_lo"], 0.0)
         self.assertTrue(math.isfinite(summary["raw_p"]))
+
+
+class TestRunCommandStreaming(unittest.TestCase):
+    """The campaign sub-step runner — live streaming + tee-to-log (the fix for
+    the 'silent all day' problem)."""
+
+    def setUp(self):
+        self._orig_stream = pairs_candidate_campaign.STREAM_OUTPUT
+
+    def tearDown(self):
+        pairs_candidate_campaign.STREAM_OUTPUT = self._orig_stream
+
+    def _run(self, cmd, log):
+        buf = io.StringIO()
+        orig = sys.stdout
+        sys.stdout = buf
+        try:
+            pairs_candidate_campaign._run_command(cmd, log, dry_run=False, label="t")
+        finally:
+            sys.stdout = orig
+        return buf.getvalue()
+
+    def test_stream_tees_to_console_and_log(self):
+        pairs_candidate_campaign.STREAM_OUTPUT = True
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "x.log"
+            out = self._run([sys.executable, "-c", "print('hello-stream')"], log)
+            self.assertIn("hello-stream", out)               # streamed to console
+            self.assertIn("hello-stream", log.read_text())   # also teed to log
+            self.assertIn("done in", out)                    # timing line printed
+
+    def test_capture_mode_writes_log(self):
+        pairs_candidate_campaign.STREAM_OUTPUT = False
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "x.log"
+            self._run([sys.executable, "-c", "print('quiet-capture')"], log)
+            self.assertIn("quiet-capture", log.read_text())
+
+    def test_nonzero_exit_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "x.log"
+            with self.assertRaises(RuntimeError):
+                self._run([sys.executable, "-c", "import sys; sys.exit(3)"], log)
+
+    def test_dry_run_writes_marker_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "x.log"
+            pairs_candidate_campaign._run_command([sys.executable, "-c", "print(1)"], log, dry_run=True)
+            self.assertIn("DRY RUN", log.read_text())
 
 
 if __name__ == "__main__":
