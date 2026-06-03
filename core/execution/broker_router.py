@@ -83,7 +83,7 @@ class AlpacaExecutionRouter:
     async def start(self) -> None:
         self._stopping = False
         if self.simulate_only:
-            logger.warning("Alpaca Execution Router running in SIMULATE_ONLY mode. No broker API calls will be made.")
+            logger.debug("Alpaca Execution Router running in SIMULATE_ONLY mode. No broker API calls will be made.")
             return
         if self._looks_like_placeholder(self.api_key) or self._looks_like_placeholder(self.api_secret):
             raise ValueError(
