@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -399,8 +400,9 @@ def main() -> None:
     parser.add_argument("--no-promote", action="store_true",
                         help="Disable auto-promotion even if the config enables it.")
     parser.add_argument("--workers", type=int, default=None,
-                        help="Override ALL gate workers at once (e.g. your CPU count). "
-                             "The A2/A3/A4/D3 sweeps are the slow part — parallelise them.")
+                        help="Worker processes for ALL gate sweeps (A2/A3/A4/D3 — the slow "
+                             "part). Defaults to the CPU count; pass --workers 1 to force "
+                             "serial. Overrides per-gate workers in the config.")
     parser.add_argument("--screen", action="store_true",
                         help="Fast triage: run only the per-pair walk-forward and skip the "
                              "A2/A3/A4/D3 gates. Pairs land in PROBATION at best (no gate "
@@ -417,10 +419,12 @@ def main() -> None:
     config_path = args.config.resolve()
     config = load_campaign(config_path)
 
-    # --workers overrides every gate's worker count; --screen disables the gates.
-    if args.workers is not None:
-        for gate in config.gates.values():
-            gate.workers = max(1, args.workers)
+    # Worker count: explicit --workers, else auto-detect the CPU count so the
+    # gate sweeps parallelise by default (they are the slow part). Overrides the
+    # per-gate workers in the config. --screen disables the gates entirely.
+    effective_workers = args.workers if args.workers is not None else max(1, os.cpu_count() or 1)
+    for gate in config.gates.values():
+        gate.workers = max(1, effective_workers)
     if args.screen:
         for gate in config.gates.values():
             gate.enabled = False
@@ -435,7 +439,7 @@ def main() -> None:
     print(
         f"Campaign: {total} pair(s), gates="
         f"{'OFF (screen)' if args.screen else ','.join(n for n, g in config.gates.items() if g.enabled) or 'none'}"
-        f", workers={args.workers or 'config'}, output={output_dir}"
+        f", workers={effective_workers}{' (auto)' if args.workers is None else ''}, output={output_dir}"
     )
     family_rows: List[dict] = []
     pair_summaries: List[dict] = []
