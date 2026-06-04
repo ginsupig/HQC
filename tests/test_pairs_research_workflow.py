@@ -127,5 +127,66 @@ class TestRunCommandStreaming(unittest.TestCase):
             self.assertIn("DRY RUN", log.read_text())
 
 
+class TestGateBar(unittest.TestCase):
+    """The A2/A3 robustness gates under the corrected (configurable) per-cell bar."""
+
+    def test_bh_threshold(self):
+        # 5 p-values; BH at alpha=0.05 cutoff is the largest p_(k) <= (k/5)*0.05.
+        ps = [0.001, 0.008, 0.02, 0.2, 0.9]
+        # k=1:0.01, k=2:0.02, k=3:0.03 ... 0.001<=0.01 ok, 0.008<=0.02 ok, 0.02<=0.03 ok -> cutoff 0.02
+        self.assertAlmostEqual(pairs_candidate_campaign._bh_threshold(ps, 0.05), 0.02)
+        self.assertEqual(pairs_candidate_campaign._bh_threshold([0.9, 0.8], 0.05), 0.0)
+
+    def test_edge_threshold_modes(self):
+        rows = [{"raw_p": 0.02}] * 12
+        self.assertEqual(pairs_candidate_campaign._edge_threshold(rows, 0.05, "raw"), 0.05)
+        self.assertAlmostEqual(pairs_candidate_campaign._edge_threshold(rows, 0.05, "bonferroni"), 0.05 / 12)
+
+    def _write_a2(self, path):
+        # Deployed slice (delta=1e-4, ve=1e-3): all 12 cells positive & raw-significant
+        # (raw_p=0.02) — a plateau under 'raw', but each fails Bonferroni 0.05/12.
+        header = "entry_z,exit_z,delta,ve,n_windows,mean_pct,ci_lo,ci_hi,raw_p,total_pnl\n"
+        lines = []
+        for ez in (1.25, 1.5, 1.75, 2.0):
+            for xz in (0.2, 0.4, 0.6):
+                lines.append(f"{ez},{xz},0.0001,0.001,46,0.23,0.05,0.40,0.02,2000\n")
+        path.write_text(header + "".join(lines), encoding="utf-8")
+
+    def test_a2_raw_bar_passes_plateau(self):
+        import tempfile
+        from pathlib import Path
+        pair = pairs_candidate_campaign.CandidatePair(y="JPM", x="BAC", csv_y="", csv_x="")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "a2_surface.csv"
+            self._write_a2(p)
+            raw = pairs_candidate_campaign._summarize_a2(p, pair, 0.05, cell_bar="raw")
+            self.assertEqual(raw.status, "PASS")
+            self.assertIn("plateau", raw.detail)
+            # Same surface under the old Bonferroni-grid bar -> FAIL (the bug).
+            bonf = pairs_candidate_campaign._summarize_a2(p, pair, 0.05, cell_bar="bonferroni")
+            self.assertEqual(bonf.status, "FAIL")
+
+    def _write_a3(self, path):
+        header = ("pair,slippage_bps_per_side,short_borrow_apr,mean_pct,ci_lo,ci_hi,"
+                  "raw_p,total_pnl,total_costs\n")
+        lines = []
+        for slip in (1.5, 2.5, 3.0):
+            for borrow in (0.0025, 0.005, 0.01):
+                lines.append(f"JPM/BAC,{slip},{borrow},0.20,0.04,0.40,0.03,1500,200\n")
+        path.write_text(header + "".join(lines), encoding="utf-8")
+
+    def test_a3_raw_bar_passes(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "a3_surface.csv"
+            self._write_a3(p)
+            raw = pairs_candidate_campaign._summarize_a3(p, "JPM/BAC", 0.05, cell_bar="raw")
+            self.assertEqual(raw.status, "PASS")
+            # Under Bonferroni-grid (0.05/9=0.0056) the deployed cost cell (raw_p=0.03) fails.
+            bonf = pairs_candidate_campaign._summarize_a3(p, "JPM/BAC", 0.05, cell_bar="bonferroni")
+            self.assertEqual(bonf.status, "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main()

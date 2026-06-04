@@ -1,21 +1,19 @@
 # Kalman pairs deployment config.
 #
-# A1 multiple-comparisons audit (docs/A1_multiple_comparisons.md) re-scored
-# the family of 6+ pair tests this codebase has run. Verdict:
-#   JPM/BAC      : raw p=0.007. Survives Bonferroni at the strict family
-#                  interpretation (n=6, threshold 0.00833) by 0.0013; FAILS
-#                  at the inclusive interpretation (n=8) that counts the
-#                  KO/PEP and XOM/CVX entry_z retries. Status: deployed
-#                  marginally; A2 (parameter sensitivity) is the gating
-#                  prerequisite to confirm the edge is a plateau and not
-#                  a knife-edge artifact at (1.5, 0.4). Do not add new
-#                  pairs until A2 is green for this one.
+# Deployment verdict (updated 2026-06-03 after a full 7-pair campaign):
+#   The basket is currently EMPTY. None of the 7 textbook candidate pairs
+#   (JPM/BAC, C/WFC, USB/PNC, V/MA, MSFT/AAPL, XOM/CVX, KO/PEP) clears the
+#   pair-family-corrected significance bar on 730d data.
+#   JPM/BAC      : was the incumbent. raw p decayed 0.007 -> 0.0223, which
+#                  fails the pair-family Bonferroni (0.05/7 = 0.0071). DEMOTED.
+#                  (Its A2 surface is a robust plateau, not a spike — but that
+#                  doesn't rescue a sub-threshold pair. See the block below.)
 #   GOOG/GOOGL   : raw p=0.031. FAILS both Bonferroni and BH-FDR at any
-#                  family size considered. Demoted from the deployed
-#                  basket until more OOS data tightens the CI. The
-#                  block below is commented out, not deleted, so it is
-#                  one-line re-enabled once the corrected significance
-#                  bar is cleared.
+#                  family size considered. Demoted (2026-05-25).
+#   Next step is discovery, not re-litigating these 7: run
+#   `python tools/research_all.py` to scan the sector universes for pairs with
+#   stronger raw edge, validate survivors through the campaign, then promote.
+#   Demoted blocks are commented (not deleted) for one-line re-enable.
 #
 # To start in paper mode against Alpaca, set environment first:
 #   ALPACA_API_KEY=...
@@ -32,14 +30,28 @@
 paper: true
 feed: iex     # IEX is free; switch to "sip" only if your Alpaca plan covers it.
 
-pairs:
-  - y: JPM
-    x: BAC
-    entry_z: 1.5
-    exit_z: 0.4
-    cooldown_seconds: 120
-    nominal_stop_pct: 0.02
-    target_dollar_notional: 10000
+# Basket is EMPTY as of 2026-06-03 — both deployed pairs demoted (below).
+# main_pairs.py refuses to start with no pairs; that is the intended "pairs
+# trading paused" state until discovery (tools/research_all.py) surfaces a
+# candidate that clears the pair-family-corrected bar.
+pairs: []
+
+  # JPM/BAC — DEMOTED by the 2026-06-03 pre-registered campaign re-validation.
+  # On 730d data its walk-forward raw_p decayed to 0.0223, which FAILS the
+  # pair-family correction (Bonferroni 0.05/7 = 0.0071; also fails BH-FDR).
+  # Its A2 parameter surface is a genuine PLATEAU (12/12 deployed-slice cells
+  # positive & raw-significant) — i.e. NOT a curve-fit spike — but a robust
+  # surface does not rescue a pair that no longer clears the corrected
+  # significance bar. The original p=0.007 edge has weakened on the current
+  # 2-year window. Re-enable only if a future window tightens raw_p below the
+  # then-current pair-family threshold.
+  # - y: JPM
+  #   x: BAC
+  #   entry_z: 1.5
+  #   exit_z: 0.4
+  #   cooldown_seconds: 120
+  #   nominal_stop_pct: 0.02
+  #   target_dollar_notional: 10000
 
   # GOOG/GOOGL — DEMOTED by A1 multiple-comparisons audit (2026-05-25).
   # Raw p=0.031 does not survive correction at family size >= 2. Re-enable
