@@ -46,6 +46,7 @@ class GateConfig:
     smoke: bool = False
     spy_csv: str = ""
     spy_symbol: str = "SPY"
+    cell_bar: str = "raw"  # per-cell EDGE+ bar for A2/A3: raw | bh | bonferroni
 
 
 @dataclass
@@ -129,6 +130,7 @@ def load_campaign(path: Path) -> CampaignConfig:
             smoke=bool((cfg or {}).get("smoke", False)),
             spy_csv=str((cfg or {}).get("spy_csv", "")),
             spy_symbol=str((cfg or {}).get("spy_symbol", "SPY")),
+            cell_bar=str((cfg or {}).get("cell_bar", "raw")),
         )
         for name, cfg in gates_raw.items()
     }
@@ -269,12 +271,48 @@ def classify_candidate(stat_pass: bool, corrected_pass: bool, gates: Dict[str, G
     return "REJECTED"
 
 
-def _summarize_a2(path: Path, pair: CandidatePair, alpha: float) -> GateResult:
+_CELL_BARS = ("raw", "bh", "bonferroni")
+_CELL_BAR_LABEL = {"raw": "raw p<alpha", "bh": "BH-FDR", "bonferroni": "Bonferroni-grid"}
+
+
+def _bh_threshold(p_values: List[float], alpha: float) -> float:
+    """Benjamini-Hochberg step-up cutoff: the largest p that still satisfies
+    p_(k) <= (k/n)*alpha. Cells with raw_p <= cutoff are the BH-FDR pass set.
+    Returns 0.0 if nothing passes."""
+    finite = sorted(p for p in p_values if math.isfinite(p))
+    n = len(finite)
+    if n == 0:
+        return 0.0
+    cutoff = 0.0
+    for rank, p in enumerate(finite, start=1):
+        if p <= (rank / n) * alpha:
+            cutoff = p
+    return cutoff
+
+
+def _edge_threshold(rows: List[dict], alpha: float, cell_bar: str) -> float:
+    """Per-cell EDGE+ p-value threshold under the chosen bar.
+
+    A2/A3 are *robustness* tests — given A1 already establishes significance
+    across the pair family, the gate asks whether the deployed parameter/cost
+    cell sits in a contiguous region of positive cells. The per-cell bar should
+    therefore NOT re-apply a family-wise correction across the grid (that double-
+    counts and is unattainably strict — ~0.05/216 for A2). Default 'raw' uses
+    raw_p<alpha and lets the plateau/region requirement do the robustness work.
+    'bh' and 'bonferroni' remain available for a stricter operator.
+    """
+    if cell_bar == "bonferroni":
+        return alpha / max(1, len(rows))
+    if cell_bar == "bh":
+        return _bh_threshold([r["raw_p"] for r in rows], alpha)
+    return alpha  # "raw"
+
+
+def _summarize_a2(path: Path, pair: CandidatePair, alpha: float, cell_bar: str = "raw") -> GateResult:
     rows = a2_analyze._load(path)
     if not rows:
         return GateResult("PENDING", "no A2 rows", str(path))
-    family_size = len(rows)
-    bonf_threshold = alpha / family_size
+    thr = _edge_threshold(rows, alpha, cell_bar)
     by_slice: Dict[Tuple[float, float], List[dict]] = {}
     for row in rows:
         by_slice.setdefault((row["delta"], row["ve"]), []).append(row)
@@ -287,22 +325,23 @@ def _summarize_a2(path: Path, pair: CandidatePair, alpha: float) -> GateResult:
     exit_vals = sorted({r["exit_z"] for r in rows_slice})
     cells = {(r["entry_z"], r["exit_z"]): r for r in rows_slice}
     is_edge = {
-        key: row["ci_lo"] > 0 and math.isfinite(row["raw_p"]) and row["raw_p"] <= bonf_threshold
+        key: row["ci_lo"] > 0 and math.isfinite(row["raw_p"]) and row["raw_p"] <= thr
         for key, row in cells.items()
     }
     region = a2_analyze._connected_region(cells, entry_vals, exit_vals, deployed, is_edge)
+    label = _CELL_BAR_LABEL.get(cell_bar, cell_bar)
     if not is_edge.get(deployed, False):
-        return GateResult("FAIL", "A2 deployed cell fails Bonferroni", str(path))
+        return GateResult("FAIL", f"A2 deployed cell not EDGE+ ({label})", str(path))
     if len(region) >= 4:
-        return GateResult("PASS", f"A2 plateau size={len(region)}", str(path))
-    return GateResult("FAIL", f"A2 spike size={len(region)}", str(path))
+        return GateResult("PASS", f"A2 plateau size={len(region)} ({label})", str(path))
+    return GateResult("FAIL", f"A2 spike size={len(region)} ({label})", str(path))
 
 
-def _summarize_a3(path: Path, pair_label: str, alpha: float) -> GateResult:
+def _summarize_a3(path: Path, pair_label: str, alpha: float, cell_bar: str = "raw") -> GateResult:
     rows = [r for r in a3_analyze._load(path) if (r.get("pair") or "").strip() == pair_label]
     if not rows:
         return GateResult("PENDING", "no A3 rows", str(path))
-    bonf = alpha / len(rows)
+    bonf = _edge_threshold(rows, alpha, cell_bar)
     cells = {(r["slippage_bps_per_side"], r["short_borrow_apr"]): r for r in rows}
     deployed = cells.get((a3_analyze.DEPLOYED_SLIPPAGE_BPS, a3_analyze.DEPLOYED_BORROW_APR))
     if deployed is None:
@@ -411,6 +450,15 @@ def main() -> None:
     parser.add_argument("--quiet-subprocess", action="store_true",
                         help="Capture sub-step output to logs only (old silent behaviour). "
                              "Default streams it live so the run is observable.")
+    parser.add_argument("--rescore", action="store_true",
+                        help="Re-derive verdicts/ranking/promotion from EXISTING artifacts in "
+                             "the output dir (walkforward.json + a2/a3/a4/d3 CSVs) without "
+                             "re-running any backtest. Use after changing the gate bar.")
+    parser.add_argument("--cell-bar", choices=_CELL_BARS, default=None,
+                        help="Per-cell EDGE+ bar for the A2/A3 robustness gates: "
+                             "raw (ci_lo>0 & raw_p<alpha; default), bh (BH-FDR across the grid), "
+                             "or bonferroni (legacy, alpha/#cells — near-unattainable). "
+                             "Overrides the per-gate cell_bar in the config.")
     args = parser.parse_args()
 
     global STREAM_OUTPUT
@@ -425,6 +473,9 @@ def main() -> None:
     effective_workers = args.workers if args.workers is not None else max(1, os.cpu_count() or 1)
     for gate in config.gates.values():
         gate.workers = max(1, effective_workers)
+    if args.cell_bar is not None:
+        for gate in config.gates.values():
+            gate.cell_bar = args.cell_bar
     if args.screen:
         for gate in config.gates.values():
             gate.enabled = False
@@ -436,10 +487,13 @@ def main() -> None:
 
     pairs = config.pairs[: args.max_pairs] if args.max_pairs else config.pairs
     total = len(pairs)
+    a2_bar = config.gates.get("a2", GateConfig()).cell_bar
     print(
         f"Campaign: {total} pair(s), gates="
         f"{'OFF (screen)' if args.screen else ','.join(n for n, g in config.gates.items() if g.enabled) or 'none'}"
-        f", workers={effective_workers}{' (auto)' if args.workers is None else ''}, output={output_dir}"
+        f", a2/a3 cell_bar={a2_bar}"
+        f", workers={effective_workers}{' (auto)' if args.workers is None else ''}"
+        f"{', RESCORE (no recompute)' if args.rescore else ''}, output={output_dir}"
     )
     family_rows: List[dict] = []
     pair_summaries: List[dict] = []
@@ -477,13 +531,19 @@ def main() -> None:
             "--sec-fee-rate", str(config.sec_fee_rate),
             "--output", str(walkforward_json),
         ]
-        _run_command(walkforward_cmd, walkforward_log, args.dry_run)
+        if not args.rescore:
+            _run_command(walkforward_cmd, walkforward_log, args.dry_run)
 
         gates: Dict[str, GateResult] = {}
         stats: dict
         if args.dry_run:
             stats = {"windows": 0, "mean_pct": 0.0, "ci_lo": 0.0, "ci_hi": 0.0, "raw_p": float("nan"), "edge_plus": False, "total_test_pnl": 0.0}
             gates = {name: GateResult("PENDING", "dry run") for name in ("a2", "a3", "a4", "d3")}
+        elif not walkforward_json.exists():
+            # --rescore against artifacts that were never produced for this pair.
+            print(f"    [rescore] {pair.label}: walkforward.json missing — skipping.", flush=True)
+            stats = {"windows": 0, "mean_pct": 0.0, "ci_lo": 0.0, "ci_hi": 0.0, "raw_p": float("nan"), "edge_plus": False, "total_test_pnl": 0.0}
+            gates = {name: GateResult("PENDING", "rescore: artifact missing") for name in ("a2", "a3", "a4", "d3")}
         else:
             payload = json.loads(walkforward_json.read_text(encoding="utf-8"))
             stats = summarize_walkforward_payload(payload, bootstrap=config.bootstrap, alpha=config.alpha)
@@ -491,62 +551,75 @@ def main() -> None:
             gate_cfg = config.gates.get("a2", GateConfig())
             if gate_cfg.enabled:
                 a2_csv = pair_dir / "a2_surface.csv"
-                _run_command(
-                    [
-                        sys.executable, str(_REPO_ROOT / "tools" / "a2_parameter_sensitivity.py"),
-                        "--csv-y", str(csv_y), "--csv-x", str(csv_x),
-                        "--symbol-y", pair.y, "--symbol-x", pair.x,
-                        "--train-days", str(config.train_days), "--test-days", str(config.test_days),
-                        "--initial-capital", str(config.initial_capital),
-                        "--sim-max-hold-minutes", str(config.sim_max_hold_minutes),
-                        "--slippage-bps-per-side", str(config.slippage_bps_per_side),
-                        "--sec-fee-rate", str(config.sec_fee_rate),
-                        "--short-borrow-apr", str(config.short_borrow_apr),
-                        "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
-                        "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
-                        "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
-                        "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
-                        "--workers", str(gate_cfg.workers),
-                        "--output", str(a2_csv),
-                    ] + (["--smoke"] if gate_cfg.smoke else []),
-                    pair_dir / "a2.log",
-                    False,
+                if not args.rescore:
+                    _run_command(
+                        [
+                            sys.executable, str(_REPO_ROOT / "tools" / "a2_parameter_sensitivity.py"),
+                            "--csv-y", str(csv_y), "--csv-x", str(csv_x),
+                            "--symbol-y", pair.y, "--symbol-x", pair.x,
+                            "--train-days", str(config.train_days), "--test-days", str(config.test_days),
+                            "--initial-capital", str(config.initial_capital),
+                            "--sim-max-hold-minutes", str(config.sim_max_hold_minutes),
+                            "--slippage-bps-per-side", str(config.slippage_bps_per_side),
+                            "--sec-fee-rate", str(config.sec_fee_rate),
+                            "--short-borrow-apr", str(config.short_borrow_apr),
+                            "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
+                            "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
+                            "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
+                            "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
+                            "--workers", str(gate_cfg.workers),
+                            "--output", str(a2_csv),
+                        ] + (["--smoke"] if gate_cfg.smoke else []),
+                        pair_dir / "a2.log",
+                        False,
+                    )
+                gates["a2"] = (
+                    _summarize_a2(a2_csv, pair, config.alpha, cell_bar=gate_cfg.cell_bar)
+                    if a2_csv.exists() else GateResult("PENDING", "a2 artifact missing", str(a2_csv))
                 )
-                gates["a2"] = _summarize_a2(a2_csv, pair, config.alpha)
 
             gate_cfg = config.gates.get("a3", GateConfig())
             if gate_cfg.enabled:
                 a3_csv = pair_dir / "a3_surface.csv"
-                _run_command(
-                    [
-                        sys.executable, str(_REPO_ROOT / "tools" / "a3_cost_stress.py"),
-                        "--csv-y", str(csv_y), "--csv-x", str(csv_x),
-                        "--symbol-y", pair.y, "--symbol-x", pair.x,
-                        "--train-days", str(config.train_days), "--test-days", str(config.test_days),
-                        "--initial-capital", str(config.initial_capital),
-                        "--sim-max-hold-minutes", str(config.sim_max_hold_minutes),
-                        "--sec-fee-rate", str(config.sec_fee_rate),
-                        "--pair-entry-z", str(_pair_value(pair, "entry_z", config.pair_entry_z)),
-                        "--pair-exit-z", str(_pair_value(pair, "exit_z", config.pair_exit_z)),
-                        "--pair-delta", str(_pair_value(pair, "delta", config.pair_delta)),
-                        "--pair-ve", str(_pair_value(pair, "ve", config.pair_ve)),
-                        "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
-                        "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
-                        "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
-                        "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
-                        "--workers", str(gate_cfg.workers),
-                        "--output", str(a3_csv),
-                    ],
-                    pair_dir / "a3.log",
-                    False,
+                if not args.rescore:
+                    _run_command(
+                        [
+                            sys.executable, str(_REPO_ROOT / "tools" / "a3_cost_stress.py"),
+                            "--csv-y", str(csv_y), "--csv-x", str(csv_x),
+                            "--symbol-y", pair.y, "--symbol-x", pair.x,
+                            "--train-days", str(config.train_days), "--test-days", str(config.test_days),
+                            "--initial-capital", str(config.initial_capital),
+                            "--sim-max-hold-minutes", str(config.sim_max_hold_minutes),
+                            "--sec-fee-rate", str(config.sec_fee_rate),
+                            "--pair-entry-z", str(_pair_value(pair, "entry_z", config.pair_entry_z)),
+                            "--pair-exit-z", str(_pair_value(pair, "exit_z", config.pair_exit_z)),
+                            "--pair-delta", str(_pair_value(pair, "delta", config.pair_delta)),
+                            "--pair-ve", str(_pair_value(pair, "ve", config.pair_ve)),
+                            "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
+                            "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
+                            "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
+                            "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
+                            "--workers", str(gate_cfg.workers),
+                            "--output", str(a3_csv),
+                        ],
+                        pair_dir / "a3.log",
+                        False,
+                    )
+                gates["a3"] = (
+                    _summarize_a3(a3_csv, pair.label, config.alpha, cell_bar=gate_cfg.cell_bar)
+                    if a3_csv.exists() else GateResult("PENDING", "a3 artifact missing", str(a3_csv))
                 )
-                gates["a3"] = _summarize_a3(a3_csv, pair.label, config.alpha)
 
             gate_cfg = config.gates.get("a4", GateConfig())
             if gate_cfg.enabled:
                 a4_csv = pair_dir / "a4_regimes.csv"
                 spy_csv = _resolve_path(gate_cfg.spy_csv, base_dir) if gate_cfg.spy_csv else None
-                if spy_csv and spy_csv.exists():
+                if args.rescore:
+                    gates["a4"] = (
+                        _summarize_a4(a4_csv, pair.label) if a4_csv.exists()
+                        else GateResult("PENDING", "a4 artifact missing", str(a4_csv))
+                    )
+                elif spy_csv and spy_csv.exists():
                     _run_command(
                         [
                             sys.executable, str(_REPO_ROOT / "tools" / "a4_regime_split.py"),
@@ -566,32 +639,36 @@ def main() -> None:
             gate_cfg = config.gates.get("d3", GateConfig())
             if gate_cfg.enabled:
                 d3_csv = pair_dir / "d3_fidelity.csv"
-                _run_command(
-                    [
-                        sys.executable, str(_REPO_ROOT / "tools" / "d3_bracket_fidelity.py"),
-                        "--csv-y", str(csv_y), "--csv-x", str(csv_x),
-                        "--symbol-y", pair.y, "--symbol-x", pair.x,
-                        "--train-days", str(config.train_days), "--test-days", str(config.test_days),
-                        "--initial-capital", str(config.initial_capital),
-                        "--slippage-bps-per-side", str(config.slippage_bps_per_side),
-                        "--sec-fee-rate", str(config.sec_fee_rate),
-                        "--short-borrow-apr", str(config.short_borrow_apr),
-                        "--pair-entry-z", str(_pair_value(pair, "entry_z", config.pair_entry_z)),
-                        "--pair-exit-z", str(_pair_value(pair, "exit_z", config.pair_exit_z)),
-                        "--pair-delta", str(_pair_value(pair, "delta", config.pair_delta)),
-                        "--pair-ve", str(_pair_value(pair, "ve", config.pair_ve)),
-                        "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
-                        "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
-                        "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
-                        "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
-                        "--alpha", str(config.alpha),
-                        "--workers", str(gate_cfg.workers),
-                        "--output", str(d3_csv),
-                    ],
-                    pair_dir / "d3.log",
-                    False,
+                if not args.rescore:
+                    _run_command(
+                        [
+                            sys.executable, str(_REPO_ROOT / "tools" / "d3_bracket_fidelity.py"),
+                            "--csv-y", str(csv_y), "--csv-x", str(csv_x),
+                            "--symbol-y", pair.y, "--symbol-x", pair.x,
+                            "--train-days", str(config.train_days), "--test-days", str(config.test_days),
+                            "--initial-capital", str(config.initial_capital),
+                            "--slippage-bps-per-side", str(config.slippage_bps_per_side),
+                            "--sec-fee-rate", str(config.sec_fee_rate),
+                            "--short-borrow-apr", str(config.short_borrow_apr),
+                            "--pair-entry-z", str(_pair_value(pair, "entry_z", config.pair_entry_z)),
+                            "--pair-exit-z", str(_pair_value(pair, "exit_z", config.pair_exit_z)),
+                            "--pair-delta", str(_pair_value(pair, "delta", config.pair_delta)),
+                            "--pair-ve", str(_pair_value(pair, "ve", config.pair_ve)),
+                            "--pair-max-leg-staleness-sec", str(config.pair_max_leg_staleness_sec),
+                            "--pair-cooldown-seconds", str(_pair_value(pair, "cooldown_seconds", config.pair_cooldown_seconds)),
+                            "--pair-nominal-stop-pct", str(_pair_value(pair, "nominal_stop_pct", config.pair_nominal_stop_pct)),
+                            "--pair-target-dollar-notional", str(_pair_value(pair, "target_dollar_notional", config.pair_target_dollar_notional)),
+                            "--alpha", str(config.alpha),
+                            "--workers", str(gate_cfg.workers),
+                            "--output", str(d3_csv),
+                        ],
+                        pair_dir / "d3.log",
+                        False,
+                    )
+                gates["d3"] = (
+                    _summarize_d3(d3_csv, pair.label) if d3_csv.exists()
+                    else GateResult("PENDING", "d3 artifact missing", str(d3_csv))
                 )
-                gates["d3"] = _summarize_d3(d3_csv, pair.label)
 
         family_rows.append({"pair": pair.label, "raw_p": "" if not math.isfinite(stats["raw_p"]) else round(stats["raw_p"], 6)})
         pair_summary = {

@@ -127,3 +127,53 @@ In SPIKE or DEMOTE cases, the operator should also pause `main_pairs.py` and run
 - Does not modify `main_pairs.py`, `kalman_spread.py`, or the harness. New work is in `tools/a2_*.py` only.
 - Does not apply correction across pairs (that was A1); the family here is the parameter grid.
 - Does not test the resampler / live-vs-backtest cadence question (settled in PR #4: byte-parity verified).
+
+---
+
+## Gate recalibration (2026-06-03): the per-cell bar was mis-specified
+
+**Bug.** The campaign's A2 (and A3) gate marked a parameter cell EDGE+ only if
+`raw_p <= alpha / (#grid cells)` — a Bonferroni correction applied *across the
+parameter grid*. With the full A2 grid that threshold is `0.05/216 ≈ 0.00023`,
+which essentially no single 46-window walk-forward cell can ever meet. The
+result: A2 and A3 returned FAIL for **every** pair in the 7-pair campaign,
+regardless of whether real edge existed.
+
+**Why it's wrong.** A2 is a *robustness* test, not a significance test. A1
+already establishes significance with a correction across the **pair family**
+(the right multiple-comparisons family). A2 only asks: *given* the pair is
+significant, is the deployed parameter node surrounded by a contiguous region
+of positive cells, or is it a curve-fit spike? The **plateau (region-size ≥ 4)
+requirement is itself the multiple-comparisons control.** Re-applying a
+family-wise correction *across the grid* on top of that double-counts and is
+unattainably strict — and, perversely, gets *stricter* the more finely you
+sample the grid, which is backwards for a robustness check.
+
+**Fix.** The per-cell EDGE+ bar is now configurable (`gates.a2.cell_bar` /
+`gates.a3.cell_bar`, or `--cell-bar`), with three options:
+
+| `cell_bar` | per-cell EDGE+ rule | use |
+|---|---|---|
+| `raw` (default) | `ci_lo > 0 AND raw_p < alpha` | robustness via plateau; correct default |
+| `bh` | `ci_lo > 0 AND` passes BH-FDR across the grid | stricter, controls false-discovery |
+| `bonferroni` | `ci_lo > 0 AND raw_p <= alpha/#cells` | legacy (near-unattainable) |
+
+**Pre-registration honesty.** This changes a pre-registered bar *after* seeing
+results, which the repo is otherwise disciplined against. It is justified as a
+correction of a genuine **methodological error** (wrong family), not goal-
+seeking: the new bar is applied uniformly to all pairs, and — importantly — it
+changes **zero deploy verdicts** for the 2026-06 campaign. JPM/BAC's A2 surface
+is a clean plateau under `raw` (12/12 deployed-slice cells positive and
+raw-significant), yet it is still correctly **DEMOTED**, because it fails the
+*pair-family* correction (`raw_p 0.0223 > 0.05/7 = 0.0071`). The gate fix simply
+stops A2/A3 from emitting false "spike/demote" verdicts on robust surfaces.
+
+**Re-scoring without recompute.** Because A2/A3 verdicts are derived from the
+per-cell `a2_surface.csv` / `a3_surface.csv` (which already hold every cell's
+mean/CI/raw_p), you can re-derive all verdicts + ranking + promotion under a new
+bar from existing artifacts, with no backtest re-run:
+
+```bash
+python tools/pairs_candidate_campaign.py --config config/pairs_research.yaml \
+    --rescore --cell-bar raw
+```
