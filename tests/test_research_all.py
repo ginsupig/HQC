@@ -85,6 +85,32 @@ class TestAggregateSurvivors(unittest.TestCase):
         rows = ra.aggregate_survivors({"x": Path("/nonexistent/b3.csv")})
         self.assertEqual(rows, [])
 
+    def test_dedup_same_pair_within_universe_keeps_best_p(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            b3 = d / "b3.csv"
+            # DUK/EXC appears twice in one universe (the stale-append bug) with
+            # different p; aggregation must keep one row (smallest raw_p).
+            self._write_b3(b3, [
+                "DUK,EXC,46,46,500,40,0.05,0.01,0.10,0.0028,\n",
+                "DUK,EXC,46,46,500,40,0.05,0.01,0.10,0.0004,\n",
+            ])
+            rows = ra.aggregate_survivors({"large_cap_utilities": b3}, alpha=0.05)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["raw_p"], "0.000400")
+
+    def test_same_pair_across_universes_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            tech = d / "tech.csv"
+            semi = d / "semi.csv"
+            self._write_b3(tech, ["AVGO,NVDA,46,46,300,30,0.1,0.02,0.2,0.14,\n"])
+            self._write_b3(semi, ["AVGO,NVDA,46,46,300,30,0.1,0.02,0.2,0.14,\n"])
+            rows = ra.aggregate_survivors({"large_cap_tech": tech, "semiconductors": semi})
+            # Same pair in two different universes is legitimate -> both kept.
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({r["universe"] for r in rows}, {"large_cap_tech", "semiconductors"})
+
 
 class TestDryRun(unittest.TestCase):
     def test_dry_run_runs_no_subprocess(self):

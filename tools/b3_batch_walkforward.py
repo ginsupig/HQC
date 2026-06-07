@@ -141,10 +141,13 @@ def _pair_stats(rets: List[float], alpha: float, n_boot: int) -> dict:
         }
     mean, ci_lo, ci_hi = _bootstrap_mean_ci(rets, n_boot=n_boot, alpha=alpha)
     p = _one_sample_p_greater_than_zero(rets)
+    # Report in PERCENT (×100) so mean_pct/ci_lo/ci_hi match the campaign's
+    # summarize_walkforward_payload units. The per-window returns are fractions;
+    # without this the column reads ~100× too small and is mislabeled "%".
     return {
-        "mean_pct": f"{mean:.6f}",
-        "ci_lo": f"{ci_lo:.6f}",
-        "ci_hi": f"{ci_hi:.6f}",
+        "mean_pct": f"{mean * 100.0:.6f}",
+        "ci_lo": f"{ci_lo * 100.0:.6f}",
+        "ci_hi": f"{ci_hi * 100.0:.6f}",
         "raw_p": f"{p:.6f}",
     }
 

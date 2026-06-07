@@ -133,20 +133,23 @@ large_cap_communication:
   - { ticker: TMUS,  sector: Communication Services }
 
 sector_etfs:
-  # The sector SPDR family. Useful for ETF-vs-ETF pair tests and as a sanity
-  # benchmark — if a sector-ETF pair shows edge, individual names in that
-  # sector are more likely to as well.
-  - { ticker: XLF,  sector: ETF_Financials }
-  - { ticker: XLK,  sector: ETF_Technology }
-  - { ticker: XLE,  sector: ETF_Energy }
-  - { ticker: XLV,  sector: ETF_HealthCare }
-  - { ticker: XLI,  sector: ETF_Industrials }
-  - { ticker: XLY,  sector: ETF_ConsumerDiscretionary }
-  - { ticker: XLP,  sector: ETF_ConsumerStaples }
-  - { ticker: XLU,  sector: ETF_Utilities }
-  - { ticker: XLB,  sector: ETF_Materials }
-  - { ticker: XLRE, sector: ETF_RealEstate }
-  - { ticker: XLC,  sector: ETF_Communication }
+  # The sector SPDR family. All share ONE sector label ("SectorETF") on purpose:
+  # B1 only pairs WITHIN a sector, so distinct per-ETF labels (the old
+  # ETF_Financials/ETF_Technology/... scheme) left every ETF alone in its bucket
+  # and produced zero candidate pairs. With a shared label B1 considers all
+  # ETF×ETF combinations; its correlation filter then drops the unrelated ones
+  # (XLE vs XLV) and keeps the economically linked ones (e.g. XLP/XLU defensives).
+  - { ticker: XLF,  sector: SectorETF }
+  - { ticker: XLK,  sector: SectorETF }
+  - { ticker: XLE,  sector: SectorETF }
+  - { ticker: XLV,  sector: SectorETF }
+  - { ticker: XLI,  sector: SectorETF }
+  - { ticker: XLY,  sector: SectorETF }
+  - { ticker: XLP,  sector: SectorETF }
+  - { ticker: XLU,  sector: SectorETF }
+  - { ticker: XLB,  sector: SectorETF }
+  - { ticker: XLRE, sector: SectorETF }
+  - { ticker: XLC,  sector: SectorETF }
 
 index_etfs:
   # Broad-market index ETFs. Mostly useful as overlap/correlation references
