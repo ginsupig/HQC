@@ -265,7 +265,7 @@ class USEquityKalmanPairsTrader:
             qty_y, qty_x = self._compute_entry_sizes(price_y, price_x)
             if qty_y <= 0 or qty_x <= 0:
                 return
-            logger.warning(
+            logger.info(
                 "[%s/%s] Spread wide. z=%.2f -> short %s x%d / long %s x%d (beta=%.3f)",
                 self.asset_y,
                 self.asset_x,
@@ -287,7 +287,7 @@ class USEquityKalmanPairsTrader:
             qty_y, qty_x = self._compute_entry_sizes(price_y, price_x)
             if qty_y <= 0 or qty_x <= 0:
                 return
-            logger.warning(
+            logger.info(
                 "[%s/%s] Spread compressed. z=%.2f -> long %s x%d / short %s x%d (beta=%.3f)",
                 self.asset_y,
                 self.asset_x,
