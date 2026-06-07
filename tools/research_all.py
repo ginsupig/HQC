@@ -93,7 +93,10 @@ def aggregate_survivors(
     (ci_lo > 0 AND raw_p < alpha — UNCORRECTED, for triage only). Sorted by
     raw_p ascending then mean_pct descending; rows without a usable p sort last.
     """
-    rows: List[dict] = []
+    # Dedup by (universe, y, x): a pair can legitimately appear in two different
+    # universes (kept), but the same pair twice in ONE universe is a stale/append
+    # artifact — keep the row with the smallest raw_p.
+    best: Dict[Tuple[str, str, str], dict] = {}
     for universe, path in b3_csv_by_universe.items():
         if not Path(path).exists():
             continue
@@ -104,7 +107,7 @@ def aggregate_survivors(
                 raw_p = _to_float(r.get("raw_p"))
                 ci_lo = _to_float(r.get("ci_lo"))
                 mean_pct = _to_float(r.get("mean_pct"))
-                rows.append({
+                row = {
                     "universe": universe,
                     "y": r["y"], "x": r["x"],
                     "n_windows": r.get("n_windows", ""),
@@ -117,7 +120,14 @@ def aggregate_survivors(
                                          and raw_p is not None and raw_p < alpha) else "0",
                     "total_pnl": r.get("total_pnl", ""),
                     "error": r.get("error", ""),
-                })
+                }
+                key = (universe, r["y"], r["x"])
+                prev = best.get(key)
+                prev_p = _to_float(prev["raw_p"]) if prev else None
+                if prev is None or (raw_p is not None and (prev_p is None or raw_p < prev_p)):
+                    best[key] = row
+
+    rows = list(best.values())
 
     def _key(row: dict) -> Tuple[float, float]:
         p = _to_float(row["raw_p"])
@@ -232,6 +242,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not _run(b2_cmd, uni_dir / "b2.log", args.dry_run):
             continue
 
+        # b3 appends to its --output; clear stale rows from a prior run so a
+        # re-run doesn't duplicate pairs (unless the user explicitly resumes).
+        if not args.dry_run and not args.resume:
+            b3_csv.unlink(missing_ok=True)
+            b3_csv.with_suffix(".returns.json").unlink(missing_ok=True)
         b3_cmd = [sys.executable, str(_TOOLS_DIR / "b3_batch_walkforward.py"),
                   "--input", str(b2_csv), "--data-dir", str(args.data_dir),
                   "--workers", str(args.workers), "--output", str(b3_csv)]

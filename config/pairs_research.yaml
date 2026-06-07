@@ -4,7 +4,14 @@
 
 campaign:
   output_dir: state/pairs_campaign
-  pre_registered_family_size: 7
+  # Pre-registered family = the 4 discovery survivors validated below. These were
+  # surfaced by tools/research_all.py (2026-06, ~65 pairs screened across 9
+  # sector universes). Per the B-flow, B1->B2->B3 is the screen and this campaign
+  # is the confirmation on survivors. Honesty note: because the screen tested ~65
+  # pairs, only DUK/EXC (raw_p~0.0004) clears a strict full-screen Bonferroni
+  # (0.05/65=0.00077); the rest lean on the smaller confirmation family. Read the
+  # corrected verdicts with that in mind.
+  pre_registered_family_size: 4
   alpha: 0.05
   bootstrap: 10000
   train_days: 30
@@ -52,45 +59,36 @@ campaign:
       enabled: true
       workers: 1
 
+# Discovery survivors (research_all 2026-06). Leg order (y/x) matches B1's
+# alphabetical convention — the SAME orientation discovery scored, which matters
+# because the Kalman fit y=beta*x is direction-sensitive. Discovery raw_p (b3,
+# UNCORRECTED, pre-full-gates) noted per pair; the campaign re-validates with the
+# full A2/A3/A4/D3 gates + pair-family correction.
+#
+# The previous 7 textbook pairs (JPM/BAC, C/WFC, USB/PNC, V/MA, MSFT/AAPL,
+# XOM/CVX, KO/PEP) were all REJECTED on 730d data (see git history / state/) and
+# are removed from the active family. JPM/BAC remains demoted in config/pairs.yaml.
 pairs:
-  - y: JPM
-    x: BAC
-    csv_y: data/alpaca/jpm_730d_1m.csv
-    csv_x: data/alpaca/bac_730d_1m.csv
-    thesis: "Large-cap bank pair with shared rate and credit drivers."
+  - y: DUK
+    x: EXC
+    csv_y: data/alpaca/duk_730d_1m.csv
+    csv_x: data/alpaca/exc_730d_1m.csv
+    thesis: "Regulated-utility pair (discovery raw_p~0.0004 — survives even a strict 0.05/65 screen correction; small but highly consistent edge. A3 cost-stress is the key test given tight spread)."
 
-  - y: C
-    x: WFC
-    csv_y: data/alpaca/c_730d_1m.csv
-    csv_x: data/alpaca/wfc_730d_1m.csv
-    thesis: "Alternate bank pair with common macro sensitivity but distinct balance-sheet profiles."
+  - y: PNC
+    x: USB
+    csv_y: data/alpaca/pnc_730d_1m.csv
+    csv_x: data/alpaca/usb_730d_1m.csv
+    thesis: "Regional-bank pair (discovery raw_p~0.0038, ~0.2%/window — best economics). NOTE: this is USB/PNC with the legs FLIPPED; the y=USB orientation scored raw_p~0.5 in the prior campaign, so confirm the direction asymmetry is real, not luck."
 
-  - y: USB
-    x: PNC
-    csv_y: data/alpaca/usb_730d_1m.csv
-    csv_x: data/alpaca/pnc_730d_1m.csv
-    thesis: "Regional-bank pair to test whether the bank thesis generalizes beyond money centers."
+  - y: COP
+    x: SLB
+    csv_y: data/alpaca/cop_730d_1m.csv
+    csv_x: data/alpaca/slb_730d_1m.csv
+    thesis: "Energy E&P vs oilfield-services (discovery raw_p~0.037 — borderline; likely fails pair-family correction, included to map the boundary)."
 
-  - y: V
-    x: MA
-    csv_y: data/alpaca/v_730d_1m.csv
-    csv_x: data/alpaca/ma_730d_1m.csv
-    thesis: "Payment duopoly with structural cross-exposure and similar network economics."
-
-  - y: MSFT
-    x: AAPL
-    csv_y: data/alpaca/msft_730d_1m.csv
-    csv_x: data/alpaca/aapl_730d_1m.csv
-    thesis: "Mega-cap tech leaders with shared index flows and stable liquidity."
-
-  - y: XOM
-    x: CVX
-    csv_y: data/alpaca/xom_730d_1m.csv
-    csv_x: data/alpaca/cvx_730d_1m.csv
-    thesis: "Integrated oil majors with matched commodity sensitivity."
-
-  - y: KO
-    x: PEP
-    csv_y: data/alpaca/ko_730d_1m.csv
-    csv_x: data/alpaca/pep_730d_1m.csv
-    thesis: "Defensive staples pair for a low-volatility cross-sector candidate."
+  - y: AVGO
+    x: MRVL
+    csv_y: data/alpaca/avgo_730d_1m.csv
+    csv_x: data/alpaca/mrvl_730d_1m.csv
+    thesis: "Semiconductor pair (discovery raw_p~0.069, ~0.3%/window — largest magnitude but p>0.05; included as a high-magnitude longshot to see if the full gates tighten or loosen it)."
