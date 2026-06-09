@@ -31,6 +31,40 @@ except ImportError:
 
 URL = "https://data.alpaca.markets/v2/stocks/bars"
 
+# HTTP statuses worth retrying (rate limit + transient server/proxy errors).
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _get_with_retry(params: dict, headers: dict, max_attempts: int = 5) -> requests.Response:
+    """GET with exponential backoff on transient network/HTTP errors.
+
+    Connection resets (WinError 10054), timeouts, 429s and 5xx are common on a
+    long multi-symbol pull and are almost always transient — retry rather than
+    let one blip abort the whole fetch. Raises RuntimeError after the last
+    attempt or on a non-retryable HTTP status.
+    """
+    delay = 1.0
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.get(URL, headers=headers, params=params, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            if attempt == max_attempts:
+                raise RuntimeError(f"network error after {max_attempts} attempts: {exc}") from exc
+            print(f"    network error ({type(exc).__name__}); retry {attempt}/{max_attempts - 1} in {delay:.0f}s",
+                  file=sys.stderr)
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        if r.status_code == 200:
+            return r
+        if r.status_code in _RETRY_STATUS and attempt < max_attempts:
+            print(f"    HTTP {r.status_code}; retry {attempt}/{max_attempts - 1} in {delay:.0f}s", file=sys.stderr)
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    raise RuntimeError("unreachable")
+
 
 def _fetch_one(
     symbol: str,
@@ -53,10 +87,7 @@ def _fetch_one(
         }
         if page_token:
             params["page_token"] = page_token
-        r = requests.get(URL, headers=headers, params=params, timeout=30)
-        if r.status_code != 200:
-            print(f"[{symbol}] error: {r.status_code} {r.text[:300]}", file=sys.stderr)
-            sys.exit(1)
+        r = _get_with_retry(params, headers)
         data = r.json()
         bars = (data.get("bars") or {}).get(symbol) or []
         rows.extend(bars)
@@ -110,6 +141,12 @@ def main() -> None:
         default="data/alpaca",
         help="Directory to write per-symbol CSVs into.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip symbols whose CSV already exists and is non-empty. Makes a "
+             "re-run after a partial/failed fetch only pull what's still missing.",
+    )
     args = parser.parse_args()
 
     key = os.environ.get("ALPACA_API_KEY")
@@ -129,13 +166,44 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+
+    if args.resume:
+        pending, present = [], 0
+        for s in symbols:
+            existing = out_dir / f"{s.lower()}_{args.days}d_1m.csv"
+            if existing.exists() and existing.stat().st_size > 0:
+                present += 1
+            else:
+                pending.append(s)
+        print(f"resume: {present} already present, {len(pending)} to fetch", file=sys.stderr)
+        symbols = pending
+
     print(f"fetching {len(symbols)} symbols ({args.days}d, feed={args.feed}) -> {out_dir}", file=sys.stderr)
 
+    failed: list[str] = []
+    ok = 0
     for sym in symbols:
-        df = _fetch_one(sym, start, end, args.feed, headers)
+        try:
+            df = _fetch_one(sym, start, end, args.feed, headers)
+        except Exception as exc:
+            # One symbol's failure must not abort the batch — log, skip, continue.
+            print(f"[{sym}] FAILED, skipping: {exc}", file=sys.stderr)
+            failed.append(sym)
+            continue
         out = out_dir / f"{sym.lower()}_{args.days}d_1m.csv"
         df.to_csv(out, index=False)
+        ok += 1
         print(f"[{sym}] wrote {len(df)} RTH bars -> {out}", file=sys.stderr)
+
+    if failed:
+        print(f"\ncompleted: {ok} ok, {len(failed)} failed ({','.join(failed)}). "
+              f"Re-run with --resume to retry just the failures.", file=sys.stderr)
+
+    # Exit non-zero only if we attempted fetches and none succeeded — a genuine
+    # failure. Partial success (or nothing pending under --resume) exits 0 so the
+    # downstream screen can run on whatever data is present.
+    if symbols and ok == 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -171,6 +171,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--days", type=int, default=730)
     p.add_argument("--feed", default="iex", choices=["iex", "sip"])
     p.add_argument("--skip-fetch", action="store_true", help="Reuse CSVs already in --data-dir.")
+    p.add_argument("--refetch", action="store_true",
+                   help="Re-download every ticker. Default fetches only tickers missing from "
+                        "--data-dir (resumable; one flaky symbol won't abort the run).")
     # B1 / B2 knobs
     p.add_argument("--as-of", default=None, help="YYYY-MM-DD anti-look-ahead date (default: today).")
     p.add_argument("--min-corr", type=float, default=0.55)
@@ -203,15 +206,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 1) Fetch all tickers once.
     if not args.skip_fetch:
-        print(f"\n[fetch] {len(tickers)} tickers, {args.days}d, feed={args.feed}")
-        ok = _run(
-            [sys.executable, str(_REPO_ROOT / "fetch_alpaca.py"),
-             "--symbols", ",".join(tickers), "--days", str(args.days),
-             "--feed", args.feed, "--out", str(args.data_dir)],
-            args.out_dir / "fetch.log", args.dry_run,
-        )
+        mode = "all" if args.refetch else "missing only"
+        print(f"\n[fetch] {len(tickers)} tickers ({mode}), {args.days}d, feed={args.feed}")
+        fetch_cmd = [sys.executable, str(_REPO_ROOT / "fetch_alpaca.py"),
+                     "--symbols", ",".join(tickers), "--days", str(args.days),
+                     "--feed", args.feed, "--out", str(args.data_dir)]
+        if not args.refetch:
+            fetch_cmd.append("--resume")
+        ok = _run(fetch_cmd, args.out_dir / "fetch.log", args.dry_run)
         if not ok:
-            print("  fetch failed — aborting (no point running screens on missing data).", file=sys.stderr)
+            print("  fetch failed — every attempted symbol errored. Re-run to retry "
+                  "(only missing tickers are fetched), or check fetch.log / credentials.",
+                  file=sys.stderr)
             return 1
     else:
         print("\n[fetch] skipped (--skip-fetch)")
