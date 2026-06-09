@@ -132,6 +132,106 @@ large_cap_communication:
   - { ticker: VZ,    sector: Communication Services }
   - { ticker: TMUS,  sector: Communication Services }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPANSION (2026-06-09): classic statistical-arb clusters that were missing.
+# Each is a tight, single-driver group where cointegration is common and
+# economically motivated (not a curve-fit). Every entry in a cluster shares ONE
+# sector label so B1 considers all within-cluster combinations; B1's correlation
+# filter then trims the unrelated ones. New tickers are auto-fetched by
+# research_all.py (fetch_alpaca.py) on the next run — no manual download needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+regional_banks:
+  # Regionals move on the same rate/credit/deposit drivers and are the textbook
+  # pairs-trading cluster — far tighter than mixing money-centers with regionals.
+  - { ticker: USB,  sector: RegionalBank }
+  - { ticker: PNC,  sector: RegionalBank }
+  - { ticker: TFC,  sector: RegionalBank }
+  - { ticker: FITB, sector: RegionalBank }
+  - { ticker: KEY,  sector: RegionalBank }
+  - { ticker: CFG,  sector: RegionalBank }
+  - { ticker: HBAN, sector: RegionalBank }
+  - { ticker: RF,   sector: RegionalBank }
+  - { ticker: MTB,  sector: RegionalBank }
+  - { ticker: CMA,  sector: RegionalBank }
+  - { ticker: ZION, sector: RegionalBank }
+  - { ticker: FHN,  sector: RegionalBank }
+
+insurance:
+  # P&C + life insurers share underwriting-cycle and rate-sensitivity drivers.
+  - { ticker: PGR,  sector: Insurance }
+  - { ticker: TRV,  sector: Insurance }
+  - { ticker: ALL,  sector: Insurance }
+  - { ticker: CB,   sector: Insurance }
+  - { ticker: AIG,  sector: Insurance }
+  - { ticker: MET,  sector: Insurance }
+  - { ticker: PRU,  sector: Insurance }
+  - { ticker: AFL,  sector: Insurance }
+  - { ticker: HIG,  sector: Insurance }
+  - { ticker: ACGL, sector: Insurance }
+
+reits:
+  # REITs trade off rates + property-type fundamentals; intra-subsector pairs
+  # (towers AMT/CCI, storage PSA/EXR, residential AVB/EQR) are classic.
+  - { ticker: AMT,  sector: REIT }
+  - { ticker: CCI,  sector: REIT }
+  - { ticker: PLD,  sector: REIT }
+  - { ticker: EQIX, sector: REIT }
+  - { ticker: O,    sector: REIT }
+  - { ticker: SPG,  sector: REIT }
+  - { ticker: PSA,  sector: REIT }
+  - { ticker: EXR,  sector: REIT }
+  - { ticker: DLR,  sector: REIT }
+  - { ticker: WELL, sector: REIT }
+  - { ticker: AVB,  sector: REIT }
+  - { ticker: EQR,  sector: REIT }
+
+materials:
+  # Chemicals, metals & mining — commodity-input-linked names.
+  - { ticker: LIN,  sector: Materials }
+  - { ticker: APD,  sector: Materials }
+  - { ticker: SHW,  sector: Materials }
+  - { ticker: ECL,  sector: Materials }
+  - { ticker: FCX,  sector: Materials }
+  - { ticker: NEM,  sector: Materials }
+  - { ticker: DOW,  sector: Materials }
+  - { ticker: DD,   sector: Materials }
+  - { ticker: NUE,  sector: Materials }
+  - { ticker: STLD, sector: Materials }
+  - { ticker: ALB,  sector: Materials }
+  - { ticker: CTVA, sector: Materials }
+
+managed_care:
+  # Health insurers / payors — one of the most cointegration-prone groups.
+  - { ticker: UNH,  sector: ManagedCare }
+  - { ticker: ELV,  sector: ManagedCare }
+  - { ticker: CI,   sector: ManagedCare }
+  - { ticker: HUM,  sector: ManagedCare }
+  - { ticker: CVS,  sector: ManagedCare }
+  - { ticker: CNC,  sector: ManagedCare }
+  - { ticker: MOH,  sector: ManagedCare }
+
+payments:
+  # Card networks + merchant processors share consumer-spend + cross-border drivers.
+  - { ticker: V,    sector: Payments }
+  - { ticker: MA,   sector: Payments }
+  - { ticker: AXP,  sector: Payments }
+  - { ticker: PYPL, sector: Payments }
+  - { ticker: FIS,  sector: Payments }
+  - { ticker: FI,   sector: Payments }
+  - { ticker: GPN,  sector: Payments }
+
+railroads_transports:
+  # Rails + LTL/truckload freight — shared industrial-volume & fuel drivers.
+  - { ticker: UNP,  sector: Transport }
+  - { ticker: CSX,  sector: Transport }
+  - { ticker: NSC,  sector: Transport }
+  - { ticker: CP,   sector: Transport }
+  - { ticker: CNI,  sector: Transport }
+  - { ticker: ODFL, sector: Transport }
+  - { ticker: JBHT, sector: Transport }
+  - { ticker: CHRW, sector: Transport }
+
 sector_etfs:
   # The sector SPDR family. All share ONE sector label ("SectorETF") on purpose:
   # B1 only pairs WITHIN a sector, so distinct per-ETF labels (the old
