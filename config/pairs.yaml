@@ -1,19 +1,29 @@
 # Kalman pairs deployment config.
 #
-# Deployment verdict (updated 2026-06-03 after a full 7-pair campaign):
-#   The basket is currently EMPTY. None of the 7 textbook candidate pairs
-#   (JPM/BAC, C/WFC, USB/PNC, V/MA, MSFT/AAPL, XOM/CVX, KO/PEP) clears the
-#   pair-family-corrected significance bar on 730d data.
-#   JPM/BAC      : was the incumbent. raw p decayed 0.007 -> 0.0223, which
-#                  fails the pair-family Bonferroni (0.05/7 = 0.0071). DEMOTED.
-#                  (Its A2 surface is a robust plateau, not a spike — but that
-#                  doesn't rescue a sub-threshold pair. See the block below.)
-#   GOOG/GOOGL   : raw p=0.031. FAILS both Bonferroni and BH-FDR at any
-#                  family size considered. Demoted (2026-05-25).
-#   Next step is discovery, not re-litigating these 7: run
-#   `python tools/research_all.py` to scan the sector universes for pairs with
-#   stronger raw edge, validate survivors through the campaign, then promote.
-#   Demoted blocks are commented (not deleted) for one-line re-enable.
+# Deployment verdict (updated 2026-06-09 after the top-4 discovery campaign):
+#   Basket = PNC/USB (1 pair). This is the first APPROVED pair since the
+#   2026-06-03 textbook campaign emptied the basket. It came out of the
+#   discovery run (tools/research_all.py) and cleared the full confirmation
+#   campaign: raw_p=0.0050 < pair-family Bonferroni 0.05/4=0.0125, mean
+#   +0.177%/window, and ALL gates PASS (A2 parameter-stability, A3 cost-stress,
+#   A4 regime-conditioning, D3 bracket-fidelity).
+#
+#   Provenance caveats (read before trusting this in size):
+#     * Single pair = zero diversification. Treat the paper run as validation,
+#       not a portfolio. Add more APPROVED pairs before leaning on it.
+#     * Family-size honesty: this clears 0.05/4. The discovery screen looked at
+#       ~65 pairs; the strict 0.05/65=0.00077 bar clears NOTHING. The family=4
+#       confirmation is the pre-registered methodology, but the funnel was wide.
+#     * Leg orientation matters: this is PNC (y) / USB (x). The flipped
+#       USB/PNC orientation sat at p~0.5 in the prior campaign — the direction
+#       asymmetry is real and load-bearing. Do not swap the legs.
+#
+#   Demoted pairs (JPM/BAC, GOOG/GOOGL) remain commented below for one-line
+#   re-enable if a future window tightens their raw_p below the then-current bar.
+#
+# Ideally regenerate this file via the selection->deploy bridge so the full
+# ranking provenance + an independent strict re-check are applied:
+#   python tools/promote_pairs.py --campaign-config config/pairs_research.yaml --write
 #
 # To start in paper mode against Alpaca, set environment first:
 #   ALPACA_API_KEY=...
@@ -30,11 +40,17 @@
 paper: true
 feed: iex     # IEX is free; switch to "sip" only if your Alpaca plan covers it.
 
-# Basket is EMPTY as of 2026-06-03 — both deployed pairs demoted (below).
-# main_pairs.py refuses to start with no pairs; that is the intended "pairs
-# trading paused" state until discovery (tools/research_all.py) surfaces a
-# candidate that clears the pair-family-corrected bar.
-pairs: []
+pairs:
+  # PNC/USB — promoted from the 2026-06-09 discovery campaign (APPROVED).
+  #   raw_p=0.0050  mean=+0.177%/window  bonferroni_threshold=0.0125 (0.05/4)
+  #   gates: A2=PASS A3=PASS A4=PASS D3=PASS
+  - y: PNC
+    x: USB
+    entry_z: 1.5
+    exit_z: 0.4
+    cooldown_seconds: 120
+    nominal_stop_pct: 0.02
+    target_dollar_notional: 10000
 
   # JPM/BAC — DEMOTED by the 2026-06-03 pre-registered campaign re-validation.
   # On 730d data its walk-forward raw_p decayed to 0.0223, which FAILS the
