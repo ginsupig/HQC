@@ -1,22 +1,17 @@
 # Kalman pairs deployment config.
 #
-# Deployment verdict (updated 2026-06-09 after the top-4 discovery campaign):
-#   Basket = PNC/USB (1 pair). This is the first APPROVED pair since the
-#   2026-06-03 textbook campaign emptied the basket. It came out of the
-#   discovery run (tools/research_all.py) and cleared the full confirmation
-#   campaign: raw_p=0.0050 < pair-family Bonferroni 0.05/4=0.0125, mean
-#   +0.177%/window, and ALL gates PASS (A2 parameter-stability, A3 cost-stress,
-#   A4 regime-conditioning, D3 bracket-fidelity).
+# Deployment verdict (updated 2026-06-09):
+#   Basket HELD EMPTY by operator choice. PNC/USB cleared the full confirmation
+#   campaign (raw_p=0.0050 < 0.05/4, mean +0.177%/window, all gates PASS) and is
+#   ready as a commented one-line re-enable below — but rather than deploy a
+#   single pair (zero diversification), discovery was widened first (+7 stat-arb
+#   clusters: regional banks, insurance, REITs, materials, managed care,
+#   payments, transports — 100->169 tickers). Deploy a diversified basket once
+#   that search surfaces additional APPROVED pairs.
 #
-#   Provenance caveats (read before trusting this in size):
-#     * Single pair = zero diversification. Treat the paper run as validation,
-#       not a portfolio. Add more APPROVED pairs before leaning on it.
-#     * Family-size honesty: this clears 0.05/4. The discovery screen looked at
-#       ~65 pairs; the strict 0.05/65=0.00077 bar clears NOTHING. The family=4
-#       confirmation is the pre-registered methodology, but the funnel was wide.
-#     * Leg orientation matters: this is PNC (y) / USB (x). The flipped
-#       USB/PNC orientation sat at p~0.5 in the prior campaign — the direction
-#       asymmetry is real and load-bearing. Do not swap the legs.
+#   Honesty note carried forward: PNC/USB clears 0.05/4 but the screen was wide
+#   (~65 pairs; strict 0.05/65=0.00077 clears nothing). The family-sized
+#   confirmation is the agreed methodology — keep it when promoting new survivors.
 #
 #   Demoted pairs (JPM/BAC, GOOG/GOOGL) remain commented below for one-line
 #   re-enable if a future window tightens their raw_p below the then-current bar.
@@ -40,17 +35,25 @@
 paper: true
 feed: iex     # IEX is free; switch to "sip" only if your Alpaca plan covers it.
 
-pairs:
-  # PNC/USB — promoted from the 2026-06-09 discovery campaign (APPROVED).
+# Basket HELD EMPTY (2026-06-09). PNC/USB passed the campaign (see below) but the
+# operator chose to widen discovery first (+7 stat-arb clusters, 100->169 tickers)
+# and deploy a diversified multi-pair basket rather than a single pair. main_pairs.py
+# refuses to start with no pairs — that is the intended "paused" state. Re-enable
+# PNC/USB (uncomment) and/or add the new survivors once the wider search completes.
+pairs: []
+
+  # PNC/USB — APPROVED by the 2026-06-09 discovery campaign; HELD pending a wider
+  # basket (single-pair = zero diversification). One-line re-enable: uncomment.
   #   raw_p=0.0050  mean=+0.177%/window  bonferroni_threshold=0.0125 (0.05/4)
   #   gates: A2=PASS A3=PASS A4=PASS D3=PASS
-  - y: PNC
-    x: USB
-    entry_z: 1.5
-    exit_z: 0.4
-    cooldown_seconds: 120
-    nominal_stop_pct: 0.02
-    target_dollar_notional: 10000
+  #   Leg orientation PNC(y)/USB(x) is load-bearing — flipped USB/PNC was p~0.5.
+  # - y: PNC
+  #   x: USB
+  #   entry_z: 1.5
+  #   exit_z: 0.4
+  #   cooldown_seconds: 120
+  #   nominal_stop_pct: 0.02
+  #   target_dollar_notional: 10000
 
   # JPM/BAC — DEMOTED by the 2026-06-03 pre-registered campaign re-validation.
   # On 730d data its walk-forward raw_p decayed to 0.0223, which FAILS the
