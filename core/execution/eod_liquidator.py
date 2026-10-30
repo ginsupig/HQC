@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, time, date
-from typing import Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import pytz
 
@@ -18,8 +18,12 @@ class EODLiquidationManager:
         liquidate_hour: int = 15,
         liquidate_minute: int = 55,
         timezone_name: str = "US/Eastern",
+        flatten: Optional[Callable[[], Awaitable[Any]]] = None,
     ) -> None:
         self.bus = bus
+        # Live runtimes pass the router's flatten_all so the close works from
+        # broker positions; fill-counted inventory drifts on partials/rejects.
+        self.flatten = flatten
         self.tz = pytz.timezone(timezone_name)
         self.liquidate_time = time(liquidate_hour, liquidate_minute)
         self.positions: Dict[str, int] = {}
@@ -102,6 +106,11 @@ class EODLiquidationManager:
             self.last_prices[symbol] = fill_price
 
     async def force_liquidate_now(self, reason: str = "manual") -> None:
+        if self.flatten is not None:
+            await self.flatten()
+            self.positions.clear()
+            return
+
         for symbol, qty in list(self.positions.items()):
             if qty == 0:
                 continue

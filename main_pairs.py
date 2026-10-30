@@ -315,10 +315,14 @@ async def _run(config_path: Path) -> None:
         is_paper=cfg.paper,
         simulate_only=simulate_only,
         slippage_controller=slip,
+        flatten_on_exit=True,
     )
     await router.start()
 
-    eod = EODLiquidationManager(bus=bus)
+    eod = EODLiquidationManager(
+        bus=bus,
+        flatten=None if simulate_only else (lambda: router.flatten_all(symbols)),
+    )
 
     # Portfolio allocation: when enabled, scale each pair's per-leg notional to
     # fit the account (equity x max_gross_leverage) and cap per-symbol exposure.
@@ -462,12 +466,56 @@ async def _run(config_path: Path) -> None:
                 )
             logger.info("[heartbeat] %s", "  |  ".join(parts))
 
+    async def _reconcile(interval_sec: float = 30.0) -> None:
+        """Keep each trader in line with the broker account.
+
+        Traders set their position when they emit orders and never see fills,
+        so a rejected leg, a failed exit or yesterday's leftovers leave them
+        out of sync with what is actually held. Two mismatched checks in a row
+        (so in-flight market orders can fill) flatten the pair at the broker."""
+        strikes: Dict[str, int] = {}
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                held = {s: int(p["qty"]) for s, p in (await router.broker_positions()).items()}
+            except Exception as exc:
+                logger.warning("[reconcile] positions fetch failed: %s", exc)
+                continue
+            for label, t in traders.items():
+                y, x = held.get(t.asset_y, 0), held.get(t.asset_x, 0)
+                if t.position == 0:
+                    in_sync = y == 0 and x == 0
+                else:
+                    # long spread (+1) = long Y / short X; short spread (-1) the reverse.
+                    in_sync = y * t.position > 0 and x * t.position < 0
+                strikes[label] = 0 if in_sync else strikes.get(label, 0) + 1
+                if strikes[label] < 2:
+                    continue
+                logger.error(
+                    "[reconcile] %s out of sync: trader position=%d but broker %s=%d %s=%d; flattening",
+                    label, t.position, t.asset_y, y, t.asset_x, x,
+                )
+                for symbol in (t.asset_y, t.asset_x):
+                    await router.flatten_symbol(symbol, {"strategy": "RECONCILE", "decision_id": f"RECONCILE-{symbol}"})
+                t.position = 0
+                t.current_qty_y = 0
+                t.current_qty_x = 0
+                t.last_signal_ts_ms = max(t.latest_ts_ms.values())
+                strikes[label] = 0
+
     await _watch_shutdown()
     heartbeat_task = asyncio.create_task(_heartbeat())
+    reconcile_task = None if simulate_only else asyncio.create_task(_reconcile())
     await stop_event.wait()
 
     logger.info("Stopping runtime...")
     heartbeat_task.cancel()
+    if reconcile_task is not None:
+        reconcile_task.cancel()
     try:
         await feed.stop()
     except Exception as exc:

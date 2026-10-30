@@ -37,8 +37,13 @@ class AlpacaExecutionRouter:
         resilient_manager: Optional[Any] = None,
         slippage_controller: Optional[Any] = None,
         request_timeout_sec: float = 8.0,
+        flatten_on_exit: bool = False,
     ) -> None:
         self.api_key = api_key
+        # Close SELL / BUY_TO_COVER by flattening the broker position instead of
+        # sending a sized order: the OTO stop legs hold the shares, so a plain
+        # closing order is rejected for insufficient qty.
+        self.flatten_on_exit = bool(flatten_on_exit)
         self.api_secret = api_secret
         self.bus = bus
         self.simulate_only = bool(simulate_only)
@@ -176,6 +181,11 @@ class AlpacaExecutionRouter:
 
         if self._stopping:
             logger.warning("Router is stopping. Ignoring new routed order for %s %s.", asset, action)
+            return
+
+        if self.flatten_on_exit and not self.simulate_only and action in {"SELL", "BUY_TO_COVER"}:
+            logger.info("[ROUTING] %s %s %s -> flatten broker position", strategy, action, asset)
+            await self.flatten_symbol(asset, payload)
             return
 
         # Fetch latest buying power from Alpaca before submitting (skipped when session not ready)
@@ -457,6 +467,67 @@ class AlpacaExecutionRouter:
                 }
             )
             return False
+
+    async def broker_positions(self) -> Dict[str, Dict[str, float | int]]:
+        if self.simulate_only:
+            return {}
+        return self._normalize_positions(await self._get_json("/positions"))
+
+    async def flatten_symbol(self, symbol: str, original_payload: Optional[Dict[str, Any]] = None) -> bool:
+        """Cancel every open order on symbol, then close whatever the broker holds.
+
+        Works from the account, not from strategy share counts, so a missed leg
+        or a stale count cannot leave a residual or flip the position."""
+        if self.simulate_only or not self.session or self.session.closed:
+            return False
+        symbol = str(symbol).upper()
+        for _ in range(20):
+            orders = await self._get_json("/orders", params={"status": "open", "symbols": symbol, "nested": "true"})
+            ids = []
+            for order in orders or []:
+                ids.append(order.get("id"))
+                ids.extend(leg.get("id") for leg in (order.get("legs") or []) if not self._is_terminal_status(leg.get("status")))
+            ids = [i for i in ids if i]
+            if not ids:
+                break
+            for order_id in ids:
+                async with self.session.delete(f"{self.base_url}/orders/{order_id}") as response:
+                    # 422 = already pending cancel / filled; the next listing settles it.
+                    if response.status not in (200, 204, 404, 422):
+                        logger.warning("[FLATTEN] cancel %s status=%s body=%s", order_id, response.status, (await response.text())[:300])
+            await asyncio.sleep(0.5)
+        else:
+            logger.error("[FLATTEN] %s open orders would not cancel; position left open", symbol)
+            return False
+
+        async with self.session.delete(f"{self.base_url}/positions/{symbol}") as response:
+            response_text = await response.text()
+            if response.status == 404:
+                logger.info("[FLATTEN] %s already flat", symbol)
+                return True
+            if response.status not in (200, 207):
+                logger.error("[FLATTEN] %s close failed status=%s body=%s", symbol, response.status, response_text[:500])
+                return False
+        parsed = json.loads(response_text)
+        payload = dict(original_payload or {})
+        payload.update(
+            action="SELL" if parsed.get("side") == "sell" else "BUY_TO_COVER",
+            shares=int(self._to_float(parsed.get("qty"), 0.0)),
+        )
+        payload.setdefault("strategy", "FLATTEN")
+        logger.info("[FLATTEN] %s %s x%s order_id=%s", symbol, payload["action"], parsed.get("qty"), parsed.get("id"))
+        order_data = {"symbol": symbol}
+        self._emit_order_update(parsed=parsed, order_data=order_data, original_payload=payload)
+        if parsed.get("id") and not self._is_terminal_status(parsed.get("status")):
+            self._start_order_poll(parsed["id"], order_data, payload)
+        return True
+
+    async def flatten_all(self, symbols: Optional[Any] = None) -> Dict[str, bool]:
+        """Flatten every held position (and cancel orders on symbols)."""
+        if self.simulate_only:
+            return {}
+        targets = set(await self.broker_positions()) | {str(s).upper() for s in (symbols or ())}
+        return {symbol: await self.flatten_symbol(symbol) for symbol in sorted(targets)}
 
     async def _simulate_fill(self, original_payload: Dict[str, Any]) -> None:
         """Simulate immediate fill for safe testing without broker side effects."""
